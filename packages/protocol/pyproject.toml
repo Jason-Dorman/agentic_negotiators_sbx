@@ -1,0 +1,25 @@
+[project]
+name = "negotiation-protocol"
+version = "0.1.0"
+description = "Versioned schemas, ABI artefacts, EIP-712 fixtures and reason tables shared by every language."
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+# docs/contributing.md 1: this package imports nothing from services or apps.
+dependencies = [
+    "pydantic>=2.11",
+    "jsonschema>=4.23",
+    "eth-account>=0.13",
+    "eth-utils>=5.2",
+]
+
+[project.optional-dependencies]
+# web3 lives behind an extra so that installing the protocol package does not give the
+# agent service an RPC client. docs/architecture.md 3.3: the agent has no chain connection.
+tools = ["web3>=7.8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/negotiation_protocol"]

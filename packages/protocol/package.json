@@ -1,0 +1,23 @@
+{
+  "name": "@negotiation/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript view of the shared protocol schemas, ABI artefacts and EIP-712 fixtures",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schemas/*": "./schemas/*",
+    "./fixtures/*": "./fixtures/*",
+    "./abi/*": "./abi/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "vitest": "5.0.1"
+  }
+}

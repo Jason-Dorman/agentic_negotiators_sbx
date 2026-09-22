@@ -182,3 +182,42 @@ Entries ADR-001 to ADR-010 restate spec Appendix B. Entries from ADR-011 are dec
 **Decision:** Apache-2.0. `LICENSE` and `NOTICE` at the repository root. `// SPDX-License-Identifier: Apache-2.0` is the first line of every Solidity source.
 **Rationale:** Apache-2.0 carries an explicit patent grant and the `NOTICE` convention, and is the usual choice for contract and infrastructure code. MIT would have been equally safe and was rejected only for being less explicit.
 **Consequences:** The SPDX identifier is compiled into contract metadata and therefore into the deployed artifact and its verified source on Etherscan, so it must be right before stage 1 rather than corrected later. New dependencies must be license-compatible, and a pull request adding one records its license.
+
+## ADR-033: Stage 0 toolchain pins
+**Status:** accepted
+**Context:** [architecture.md](architecture.md) section 10 named the technology choices and deferred the exact versions to "implementation start, pinned in lockfiles, and recorded in the decision log". Stage 0 is that moment.
+**Decision:** The versions below, pinned in `uv.lock`, `pnpm-lock.yaml`, `contracts/foundry.toml` and the image tags in `infra/compose.local.yaml`. CI installs the same versions from the same files, so a green local run and a green pipeline mean the same thing.
+
+| Component | Pin | Where |
+|---|---|---|
+| Python | 3.12 | `.python-version`, `requires-python = ">=3.12,<3.13"` |
+| uv | 0.12.x | `uv.lock` lockfile version |
+| Node | 22 LTS | `.nvmrc`, `engines.node` |
+| pnpm | 11.27.1 | `packageManager` |
+| TypeScript | 6.0.3 | root `devDependencies` |
+| ESLint / typescript-eslint | 10.11.0 / 8.70.1 | root `devDependencies` |
+| React / Vite / Vitest | 19.3.0 / 8.3.0 / 5.0.1 | `apps/web/package.json` |
+| Foundry | v1.8.3 | `FOUNDRY_VERSION` in CI, image tag in Compose |
+| Solidity | 0.8.28, `evm_version = "cancun"` | `contracts/foundry.toml` |
+| PostgreSQL | 16.15 | `postgres:16.15-alpine` |
+
+**Rationale for the two pins that are not simply "latest":**
+
+- **pnpm 11, not 12.** pnpm 12 ships its entry point as `bin/pnpm.mjs`; the Corepack bundled with Node 22 LTS resolves `bin/pnpm.cjs` and fails to launch it. Pinning the newest pnpm that Corepack can activate means `corepack enable pnpm` is the whole setup step, locally and in CI, with no second installer to keep in step. Revisit when Node's bundled Corepack updates.
+- **TypeScript 6, not 7.** typescript-eslint 8.70.1 declares `typescript >=4.8.4 <6.1.0`. TypeScript 7 is the Go rewrite and the lint toolchain has not caught up; taking it would mean dropping `strict-type-checked`, which is the rule set [contributing.md](contributing.md) section 2.2 requires. Revisit when typescript-eslint supports 7.
+
+**Consequences:** Solidity 0.8.28 with `evm_version = "cancun"` is valid on both Anvil and Sepolia, and the optimizer settings here are recorded in the deployment manifest, so changing anything in the `[profile.default]` block changes the deployed artefact and is itself a decision-log entry. The published PostgreSQL port defaults to 55432 rather than 5432, because a host PostgreSQL on the default port would make the documented start-up command fail on a clean machine; `POSTGRES_PORT` overrides it and the container-internal port is unchanged.
+
+## ADR-034: `src/` layout for the three Python packages
+**Status:** accepted
+**Context:** [contributing.md](contributing.md) section 1.1 names backend modules by path (`services/api/observation/`), which reads as a flat package at the service root. Stage 0 had to choose the actual layout.
+**Decision:** `src/` layout: `services/api/src/api/`, `services/agent/src/agent/`, `packages/protocol/src/negotiation_protocol/`. Import package names are `api`, `agent` and `negotiation_protocol`; distribution names are `negotiation-api`, `negotiation-agent` and `negotiation-protocol`. Section 1.1's paths are updated to match.
+**Rationale:** Under a flat layout the repository root is on `sys.path` during a test run, so a test can import a module that the installed package does not actually ship, and `mypy --strict` type-checks a tree that is not the distributed one. That failure mode is quiet and it would surface first in the Compose images. `api` is kept as the import name because [architecture.md](architecture.md) section 3.6 specifies the evaluator entry point as `python -m api.eval`.
+**Consequences:** Each package is installed into the workspace environment in editable mode by `uv sync`; `mypy_path` and ruff's `src` setting name the three `src/` directories. `packages/protocol/tools/` stays outside `src/` because it is a script directory, not importable API, as [build_plan.md](build_plan.md) stage 1 specifies.
+
+## ADR-035: `web3` is an optional extra of the protocol package
+**Status:** accepted
+**Context:** The reconstruction tool (`packages/protocol/tools/reconstruct.py`, A15) reads chain data, so it needs an RPC client. The agent service depends on the protocol package and must have no RPC connection at all ([architecture.md](architecture.md) section 3.3).
+**Decision:** `web3` is declared as `negotiation-protocol[tools]`, not a core dependency. The agent service installs `negotiation-protocol` and therefore does not get web3.
+**Rationale:** Isolation is meant to be structural rather than procedural. If web3 is present in the agent's environment, "the agent never talks to the chain" is a convention that a future import can break silently; if it is absent, the same mistake is an `ImportError` at start-up. The import-linter contract forbids it as well, so the rule is enforced twice, at different times.
+**Consequences:** Anything that runs the reconstruction tool installs the extra explicitly. The `agent-has-no-database-and-no-rpc` contract in `.importlinter` names `web3` alongside `api`, `sqlalchemy`, `asyncpg` and `alembic`.

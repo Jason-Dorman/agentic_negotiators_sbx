@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | 0.1.0 |
-| **Date** | 19 September 2026 |
+| **Date** | 22 September 2026 |
 | **Source** | Spec section 13 |
 | **Related** | [prd.md](prd.md), [test_strategy.md](test_strategy.md), [architecture.md](architecture.md), [contributing.md](contributing.md) |
 
@@ -24,17 +24,22 @@ flowchart LR
 
 ## Stage 0: Scaffold
 
+**Status: complete, 22 September 2026.**
+
 **Deliverables**
-- Git repository initialized (done, 21 September 2026); directory layout per spec 10.2; `.gitignore`, `.editorconfig`, `.env.example`.
-- `LICENSE` (Apache-2.0) and `NOTICE` at the repository root (done, 21 September 2026); `SPDX-License-Identifier: Apache-2.0` as the first line of every `.sol` file from stage 1 ([ADR-032](decision_log.md)).
-- `infra/secrets/` git-ignored, with keystore generation and loading in place from the start rather than at stage 5 ([ADR-023](decision_log.md)).
-- Toolchains pinned: `uv` workspace for `services/api`, `services/agent`, `packages/protocol` (Python); `pnpm` workspace for `apps/web` and the TypeScript side of `packages/protocol`; Foundry for `contracts/`.
-- Docker Compose local profile with PostgreSQL and Anvil; health checks.
-- CI pipeline skeleton with the gates in [test_strategy.md](test_strategy.md) section 10, initially running lint and an empty test suite.
-- Pre-commit hooks: format, lint, secret scan.
+- Git repository initialized (done, 21 September 2026); directory layout per spec 10.2 with a `src/` layout inside the three Python packages ([ADR-034](decision_log.md)); `.gitignore`, `.gitattributes`, `.editorconfig`, `infra/.env.example`.
+- `LICENSE` (Apache-2.0) and `NOTICE` at the repository root (done, 21 September 2026); `SPDX-License-Identifier: Apache-2.0` as the first line of every `.sol` file from stage 1, enforced from now by `infra/scripts/check_spdx.py` in the pre-commit hook and the CI secret-scan job ([ADR-032](decision_log.md)).
+- `infra/secrets/` git-ignored, with `infra/scripts/generate_keys.py` producing `env:` refs for the local profile and encrypted keystores for Sepolia ([ADR-023](decision_log.md)). Loading is the `KeyHolder` in `services/agent/src/agent/keys/`, which arrives with the agent service in stage 2; ADR-023 already places the first exercise of the `keystore:` path there.
+- Toolchains pinned ([ADR-033](decision_log.md)): `uv` workspace for `services/api`, `services/agent`, `packages/protocol` (Python 3.12, one `uv.lock`); `pnpm` workspace for `apps/web` and the TypeScript side of `packages/protocol`; Foundry v1.8.3 for `contracts/`, Solidity 0.8.28.
+- Docker Compose local profile with PostgreSQL 16.15 and Anvil on chain 31337; health checks on both; a second database for the integration suite. PostgreSQL publishes on 55432 so a host PostgreSQL does not block start-up.
+- CI pipeline skeleton (`.github/workflows/ci.yml`) with one job per gate in [test_strategy.md](test_strategy.md) section 10. Gates with nothing to check yet carry `if: false` and report as skipped, never as passed, each naming the stage that turns it on.
+- Pre-commit hooks: format, lint, type check, secret scan, SPDX header.
+- The import contract from [contributing.md](contributing.md) section 1.1 written out in `.importlinter`, active from stage 2.
 - `CLAUDE.md` and `docs/README.md` index.
 
-**Exit condition:** `docker compose --profile local up` starts PostgreSQL and Anvil; CI passes on an empty commit; a developer can run each toolchain's test command and get zero tests, zero failures.
+**Exit condition (met):** `docker compose --profile local up` starts PostgreSQL and Anvil, both reporting healthy; `make ci` runs every gate the stage has earned and passes; each toolchain's test command runs green.
+
+One deviation from the exit condition as written, taken deliberately: the Python suite is not empty. It holds 15 tests covering `secret_scan.py` and `check_spdx.py`. Both are merge gates, and a gate that has never been shown a failing input is a gate that passes forever; shipping either untested would have contradicted [contributing.md](contributing.md) section 5. The TypeScript and Foundry suites are empty as specified.
 
 ## Stage 1: Protocol and contracts
 

@@ -2,7 +2,7 @@
 
 An observable experiment in agent negotiation and financial execution. Two independently instructed AI agents negotiate the price of a fixed quantity of a mock asset. Every valid public action is recorded on an Ethereum testnet by a non-upgradeable smart contract, and the agreed exchange settles atomically with test tokens, or not at all.
 
-**Status:** governance documents complete; software and contracts not yet built. See [docs/build_plan.md](docs/build_plan.md).
+**Status:** governance documents complete; repository scaffolded and the local stack runs. Protocol, contracts and services are not yet built. See [docs/build_plan.md](docs/build_plan.md).
 
 ## What it demonstrates
 
@@ -46,18 +46,18 @@ The operator sets each agent's private mandate and starts a run. On each turn th
 | Chains | Anvil (31337) locally, Ethereum Sepolia (11155111) for public demos |
 | Local infra | Docker Compose |
 
-## Repository layout (planned)
+## Repository layout
 
-| Path | Contents |
-|---|---|
-| `apps/web/` | React application and typed API client |
-| `services/api/` | FastAPI backend: run controller, chain relay, indexer |
-| `services/agent/` | Agent service; run as two instances |
-| `packages/protocol/` | JSON schemas, ABI artifacts, EIP-712 fixtures, reconstruction tool |
-| `contracts/` | Solidity sources, Foundry tests, deployment scripts |
-| `scenarios/` | Manufactured scenario templates and evaluation populations |
-| `infra/` | Compose profiles and environment templates |
-| `docs/` | Specification, governance documents, runbook, deployment manifests, evidence |
+| Path | Contents | Built in |
+|---|---|---|
+| `apps/web/` | React application and typed API client | Stage 4 |
+| `services/api/` | FastAPI backend: run controller, chain relay, indexer | Stage 2 |
+| `services/agent/` | Agent service; run as two instances | Stages 2 and 3 |
+| `packages/protocol/` | JSON schemas, ABI artifacts, EIP-712 fixtures, reconstruction tool | Stage 1 |
+| `contracts/` | Solidity sources, Foundry tests, deployment scripts | Stage 1 |
+| `scenarios/` | Manufactured scenario templates and evaluation populations | Stages 1 and 6 |
+| `infra/` | Compose profiles, environment template, key and scan scripts | Stage 0 |
+| `docs/` | Specification, governance documents, runbook, deployment manifests, evidence |  |
 
 ## Documentation
 
@@ -65,7 +65,25 @@ Start at [docs/README.md](docs/README.md). The originating specification is [doc
 
 ## Getting started
 
-Not yet runnable. Stage 0 of the build plan adds the toolchain, Compose profile, and CI. This section will then describe local startup; the operator runbook will cover funding a testnet demonstration, recovery, replay, and export.
+There is nothing to negotiate with yet — the protocol, the contracts and the services arrive in
+stages 1 to 3. What works today is the toolchain, the local chain and the database, which is
+what stage 0 set out to deliver.
+
+Prerequisites: [uv](https://docs.astral.sh/uv/), Node 22 with Corepack, [Foundry](https://getfoundry.sh),
+Docker with Compose. Exact versions are in [ADR-033](docs/decision_log.md).
+
+```sh
+make setup                  # uv sync, pnpm install, pre-commit install
+make up                     # PostgreSQL on 55432 and Anvil on 8545, both health-checked
+make ci                     # every gate the build has earned so far
+make down                   # stop, keeping the database volume
+```
+
+`make help` lists the rest. Configuration lives in `infra/.env.example`; copy it to `infra/.env`,
+which is git-ignored, when a stage needs one. The local profile runs on defaults without it.
+
+The operator runbook — funding a testnet demonstration, recovery, replay and export — starts in
+stage 2 at `docs/runbook.md` and is completed in stage 5.
 
 ## License
 

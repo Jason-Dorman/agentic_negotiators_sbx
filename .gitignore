@@ -1,0 +1,55 @@
+# --- Secrets: never commit. See docs/security_and_trust_boundaries.md section 7. ---
+.env
+.env.*
+!.env.example
+infra/secrets/*
+!infra/secrets/.gitkeep
+!infra/secrets/README.md
+*.keystore
+keystore*.json
+UTC--*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# --- Node / TypeScript ---
+node_modules/
+.pnpm-store/
+apps/web/dist/
+apps/web/coverage/
+apps/web/playwright-report/
+apps/web/test-results/
+apps/web/.vite/
+*.tsbuildinfo
+
+# --- Foundry ---
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+!contracts/broadcast/**/dry-run/
+
+# --- Tooling and editors ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+
+# --- Run artefacts that are regenerated, not evidence ---
+# Evidence exports under docs/evidence/ ARE committed (test_strategy.md section 9).
+/tmp/
+*.local

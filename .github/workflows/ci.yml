@@ -1,0 +1,187 @@
+# CI gates, one job per row of docs/test_strategy.md section 10.
+#
+# Stage 0 wires up the jobs that have something to check today: format and lint, the secret
+# scan, and the three empty test suites. The rest are declared here with the stage that fills
+# them and carry `if: false`, so they report as *skipped* rather than green. That distinction is
+# the point: a gate that goes green without running is worse than one that is absent, because
+# it is believed. Remove the `if: false` in the stage named on the job, not before.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FOUNDRY_VERSION: v1.8.3
+
+jobs:
+  # ------------------------------------------------------------------------------------
+  # Gate: Secret scan                                                   blocks merge
+  # ------------------------------------------------------------------------------------
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so a secret added and reverted in the same branch is still visible.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups
+      - name: Hex private keys, sk-ant- prefixes, keystore JSON
+        run: uv run python infra/scripts/secret_scan.py
+      - name: SPDX identifier on every Solidity source (ADR-032)
+        run: uv run python infra/scripts/check_spdx.py
+
+  # ------------------------------------------------------------------------------------
+  # Gate: Format and lint (ruff, mypy strict, eslint, prettier, forge fmt)  blocks merge
+  # ------------------------------------------------------------------------------------
+  lint-python:
+    name: Lint — Python (ruff, mypy --strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run mypy .
+
+  lint-web:
+    name: Lint — TypeScript (eslint, prettier, tsc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Enable pnpm
+        run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run format:check
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+
+  lint-contracts:
+    name: Lint — Solidity (forge fmt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - run: forge fmt --check --root contracts
+
+  # ------------------------------------------------------------------------------------
+  # Gate: Python unit and integration (Anvil + PostgreSQL)                 blocks merge
+  # The PostgreSQL and Anvil services are added with the integration suite in stage 2.
+  # ------------------------------------------------------------------------------------
+  test-python:
+    name: Test — Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups
+      - run: uv run pytest
+
+  # ------------------------------------------------------------------------------------
+  # Gates: Contract unit and short invariant; Protocol fixtures; Web unit  blocks merge
+  # ------------------------------------------------------------------------------------
+  test-contracts:
+    name: Test — contracts (unit and short invariant)
+    runs-on: ubuntu-latest
+    env:
+      FOUNDRY_PROFILE: ci
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - run: forge build --root contracts
+      - run: forge test --root contracts -vvv
+
+  test-web:
+    name: Test — web and protocol (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Enable pnpm
+        run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test
+
+  # ------------------------------------------------------------------------------------
+  # Gates not yet earned. Skipped, never green, until the stage named on each wires it up.
+  # None of these may be made a required check before then.
+  # ------------------------------------------------------------------------------------
+  import-boundaries:
+    name: Import boundaries (stage 2)
+    if: false # .importlinter is written; the modules it names arrive in stage 2.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --all-groups
+      - run: uv run lint-imports
+
+  isolation:
+    name: Isolation and leakage suite — A12 (stage 3)
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --all-groups
+      - run: uv run pytest -m isolation
+
+  # 100 percent lines on NegotiationExchange, 100 percent branches on the agent validator and
+  # signer, 85 percent lines on the backend (docs/test_strategy.md section 10, confirmed by the
+  # product owner on 21 September 2026).
+  coverage:
+    name: Coverage thresholds (stage 2)
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: echo "Wired up with the code it measures."
+
+  gas-snapshot:
+    name: Gas snapshot regression (stage 1)
+    if: false # Overridable only by a decision-log entry.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge snapshot --check --root contracts
+
+  e2e:
+    name: Playwright E2E (stage 4)
+    if: false # Gates merge to main once the interface exists.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: echo "Wired up with the interface in stage 4."

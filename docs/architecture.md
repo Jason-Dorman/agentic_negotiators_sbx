@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | 0.1.0 |
-| **Date** | 19 September 2026 |
+| **Date** | 22 September 2026 |
 | **Status** | Draft for build |
 | **Source** | Spec sections 4, 5, 8, 9, 10 |
 | **Related** | [prd.md](prd.md), [protocol.md](protocol.md), [api_contract.md](api_contract.md), [data_model.md](data_model.md), [security_and_trust_boundaries.md](security_and_trust_boundaries.md), [decision_log.md](decision_log.md) |
@@ -403,7 +403,7 @@ The model client lives only in the agent service and is wrapped behind `ModelCli
 | Database | PostgreSQL 16 | |
 | Local infra | Docker Compose | |
 
-Exact versions are chosen at implementation start, pinned in lockfiles, and recorded in [decision_log.md](decision_log.md).
+Exact versions were chosen at the start of stage 0, are pinned in `uv.lock`, `pnpm-lock.yaml`, `contracts/foundry.toml` and the Compose image tags, and are recorded in [ADR-033](decision_log.md).
 
 ## 11. Architectural risks
 

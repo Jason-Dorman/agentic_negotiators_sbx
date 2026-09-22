@@ -1,0 +1,18 @@
+pnpm-lock.yaml
+uv.lock
+node_modules/
+.venv/
+dist/
+coverage/
+playwright-report/
+test-results/
+contracts/lib/
+contracts/out/
+contracts/cache/
+docs/evidence/
+docs/deployments/
+
+# Markdown is authored, not generated. The governance documents are hand-wrapped, their tables
+# are aligned for reading in the diff, and they carry Mermaid blocks that Prettier's embedded
+# formatter would rewrite. Line endings and trailing whitespace are handled by .editorconfig.
+*.md

@@ -1,0 +1,97 @@
+# Format, lint and secret scan before a commit is written (docs/build_plan.md stage 0).
+#
+#     uv run pre-commit install
+#
+# Every hook that runs project code uses `language: system` and the project's own toolchain, so
+# a hook and its CI gate cannot drift to different versions of the same tool.
+
+default_install_hook_types: [pre-commit, commit-msg]
+exclude: ^(contracts/(lib|out|cache)/|.*\.lock$|pnpm-lock\.yaml$|uv\.lock$)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: detect-private-key
+
+  # ------------------------------------------------------------------------------------
+  # This project's own gates (docs/security_and_trust_boundaries.md 7, ADR-032)
+  # ------------------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: secret-scan
+        name: secret scan (hex keys, sk-ant-, keystore JSON)
+        entry: uv run python infra/scripts/secret_scan.py
+        language: system
+        pass_filenames: true
+        require_serial: true
+
+      - id: spdx-header
+        name: SPDX identifier is the first line of every .sol
+        entry: uv run python infra/scripts/check_spdx.py
+        language: system
+        files: \.sol$
+        pass_filenames: true
+
+  # ------------------------------------------------------------------------------------
+  # Python (docs/contributing.md 2.1)
+  # ------------------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+
+      - id: mypy
+        name: mypy --strict
+        # Checks the whole tree, not the staged files: a change in one module can break typing
+        # in another that is not part of this commit.
+        entry: uv run mypy .
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+
+  # ------------------------------------------------------------------------------------
+  # TypeScript and Solidity (docs/contributing.md 2.2, 2.3)
+  # ------------------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier
+        entry: pnpm exec prettier --write --ignore-unknown
+        language: system
+        types_or: [ts, tsx, javascript, jsx, json, yaml, css, html]
+
+      - id: eslint
+        name: eslint
+        entry: pnpm exec eslint --fix --no-warn-ignored
+        language: system
+        types_or: [ts, tsx, javascript, jsx]
+
+      - id: forge-fmt
+        name: forge fmt
+        entry: forge fmt --root contracts
+        language: system
+        files: \.sol$
+        pass_filenames: false

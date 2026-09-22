@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | 0.1.0 |
-| **Date** | 19 September 2026 |
+| **Date** | 22 September 2026 |
 | **Applies to** | Every change to this repository, human or AI-assisted |
 | **Related** | [engineering-principles.md](engineering-principles.md), [test_strategy.md](test_strategy.md), [decision_log.md](decision_log.md), [build_plan.md](build_plan.md) |
 
@@ -15,20 +15,32 @@ The core mantra from [engineering-principles.md](engineering-principles.md) appl
 
 | Path | Contents | Owner module rules |
 |---|---|---|
-| `apps/web/` | React app, typed client | May import only from `packages/protocol` (TS) and generated OpenAPI types |
-| `services/api/` | Backend | Modules listed in [architecture.md](architecture.md) 3.2; import boundaries below |
-| `services/agent/` | Agent service | No database, no RPC, no imports from `services/api` |
-| `packages/protocol/` | Schemas, ABI, fixtures, reason tables, reconstruction tool | Imports nothing from services or apps |
+| `apps/web/` | React app, typed client (`@negotiation/web`) | May import only from `packages/protocol` (TS) and generated OpenAPI types |
+| `services/api/src/api/` | Backend (`negotiation-api`) | Modules listed in [architecture.md](architecture.md) 3.2; import boundaries below |
+| `services/agent/src/agent/` | Agent service (`negotiation-agent`) | No database, no RPC, no imports from `services/api` |
+| `packages/protocol/` | Schemas, ABI, fixtures, reason tables, reconstruction tool (`negotiation-protocol`, `@negotiation/protocol`) | Imports nothing from services or apps |
 | `contracts/` | Solidity, Foundry tests, deploy scripts | OpenZeppelin only; no custom crypto |
 | `scenarios/` | Scenario JSON | Validated by schema in CI |
-| `infra/` | Compose profiles, `.env.example`, keystore directory (git-ignored) | |
+| `infra/` | Compose profiles, `.env.example`, keystore directory (git-ignored), repository scripts | |
 | `docs/` | Governance documents, runbook, deployment manifests, evidence exports | |
+
+The three Python packages use a `src/` layout and are members of one `uv` workspace resolved by a single `uv.lock` ([ADR-034](decision_log.md)). `apps/web` and the TypeScript half of `packages/protocol` are a `pnpm` workspace resolved by `pnpm-lock.yaml`. Toolchain versions are pinned in those lockfiles and recorded in [ADR-033](decision_log.md).
 
 The project is licensed Apache-2.0. `LICENSE` and `NOTICE` live at the repository root; do not vendor code under an incompatible license, and record any new dependency's license in the pull request.
 
+**Commands.** `make help` lists them all; these are the ones a change passes through:
+
+| Command | What it runs |
+|---|---|
+| `make setup` | `uv sync`, `pnpm install`, `pre-commit install` |
+| `make lint` | ruff format and check, `mypy --strict`, prettier, eslint, `tsc`, `forge fmt`, SPDX check, secret scan |
+| `make test` | `pytest`, `vitest`, `forge test` |
+| `make ci` | `make lint` then `make test`; the same commands the pipeline runs |
+| `make up` / `make down` | The local Compose profile: PostgreSQL and Anvil |
+
 ### 1.1 Import boundaries (backend)
 
-Enforced by an `import-linter` contract in CI.
+Enforced by an `import-linter` contract in CI. The contract is written out in [`.importlinter`](../.importlinter) at the repository root and runs from stage 2, when the modules it names exist.
 
 - `routes` → `controller`, `evidence`, `metrics`, `db.repositories`, `config`
 - `controller` → `turns`, `relay`, `indexer`, `validation`, `db.repositories`, `agent_client`
@@ -43,10 +55,10 @@ Enforced by an `import-linter` contract in CI.
 
 Changes to any of these require a reviewer to walk the data classification table in [data_model.md](data_model.md) section 7:
 
-- `services/api/observation/`
-- `services/api/evidence/`
-- `services/api/routes/sse.py`
-- `services/agent/model/` (prompt assembly)
+- `services/api/src/api/observation/`
+- `services/api/src/api/evidence/`
+- `services/api/src/api/routes/sse.py`
+- `services/agent/src/agent/model/` (prompt assembly)
 - Any logging configuration
 
 ## 2. Code standards
@@ -74,7 +86,7 @@ Changes to any of these require a reviewer to walk the data classification table
 ### 2.3 Solidity
 
 - `// SPDX-License-Identifier: Apache-2.0` is the first line of every `.sol` file. The identifier is compiled into contract metadata, so it is part of the deployed artifact, not a comment ([ADR-032](decision_log.md)).
-- `^0.8.24` or the pinned version in `foundry.toml`; optimizer settings recorded in the manifest.
+- Solidity 0.8.28 with `evm_version = "cancun"`, pinned in `contracts/foundry.toml` ([ADR-033](decision_log.md)); optimizer settings recorded in the manifest.
 - OpenZeppelin 5.x for `ERC20`, `EIP712`, `ECDSA`, `SafeERC20`, `ReentrancyGuard`. No other dependencies.
 - Custom errors, never `require` strings. Named per [protocol.md](protocol.md) 8.3.
 - Checks, effects, interactions. Effects before any external call. `nonReentrant` on `acceptAndSettle`.

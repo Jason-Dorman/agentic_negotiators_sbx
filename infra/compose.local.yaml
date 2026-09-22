@@ -1,0 +1,82 @@
+# Compose profile: local (docs/architecture.md section 4).
+#
+# Stage 0 brings up the two dependencies the rest of the stack is built against: PostgreSQL 16
+# and an Anvil chain on 31337. The api, agent-a, agent-b and web services are added in stage 2
+# of docs/build_plan.md, on the networks already declared below.
+#
+# Every published port binds to 127.0.0.1. Nothing here is reachable from the network without a
+# deliberate change and the review in docs/security_and_trust_boundaries.md section 8.1.
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    profiles: ["local"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-negotiation}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-negotiation}
+      POSTGRES_DB: ${POSTGRES_DB:-negotiation}
+      # Deterministic collation so ordering in tests does not depend on the host locale.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      # 55432, not 5432: a host PostgreSQL on the default port is common enough that using it
+      # would make the documented start-up command fail on a clean machine. Override with
+      # POSTGRES_PORT. The container-internal port is unchanged.
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-negotiation} -d ${POSTGRES_DB:-negotiation}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - backend
+    restart: unless-stopped
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.8.3
+    profiles: ["local"]
+    # The image ships every Foundry binary; pick one explicitly.
+    entrypoint: ["anvil"]
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8545"
+      - "--chain-id"
+      - "31337"
+      - "--accounts"
+      - "10"
+      - "--balance"
+      - "10000"
+      # Anvil's published test mnemonic. These keys are worthless by construction and are the
+      # reason the local profile needs no keystore password
+      # (ADR-023, docs/security_and_trust_boundaries.md section 7).
+      - "--mnemonic"
+      - "test test test test test test test test test test test junk"
+    ports:
+      - "127.0.0.1:${ANVIL_PORT:-8545}:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+
+networks:
+  # Agent services join `agents` only, so they are reachable from the backend and from nothing
+  # else (docs/architecture.md section 4, docs/security_and_trust_boundaries.md section 2).
+  backend:
+    driver: bridge
+  agents:
+    driver: bridge
+    internal: true

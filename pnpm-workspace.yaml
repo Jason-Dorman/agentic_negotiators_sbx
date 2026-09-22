@@ -1,0 +1,23 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+minimumReleaseAgeExclude:
+  - "@typescript-eslint/eslint-plugin@8.70.1"
+  - "@typescript-eslint/parser@8.70.1"
+  - "@typescript-eslint/project-service@8.70.1"
+  - "@typescript-eslint/scope-manager@8.70.1"
+  - "@typescript-eslint/tsconfig-utils@8.70.1"
+  - "@typescript-eslint/type-utils@8.70.1"
+  - "@typescript-eslint/types@8.70.1"
+  - "@typescript-eslint/typescript-estree@8.70.1"
+  - "@typescript-eslint/utils@8.70.1"
+  - "@typescript-eslint/visitor-keys@8.70.1"
+  - html-encoding-sniffer@7.0.0
+  - jsdom@30.1.1
+  - typescript-eslint@8.70.1
+  - w3c-xmlserializer@6.0.0
+
+# Exact versions are pinned here and in pnpm-lock.yaml. See ADR-033.
+onlyBuiltDependencies:
+  - esbuild
