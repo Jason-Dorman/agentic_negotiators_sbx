@@ -4,6 +4,11 @@
 # and an Anvil chain on 31337. The api, agent-a, agent-b and web services are added in stage 2
 # of docs/build_plan.md, on the networks already declared below.
 #
+# Isolation from the operator's other projects is deliberate and has four parts: the Compose
+# project name `agent_negotiation` (see compose.yaml), a volume with an explicit project-scoped
+# name, a database and role named for this project rather than `postgres`, and a published host
+# port that defaults away from 5432. Nothing here attaches to another stack's data.
+#
 # Every published port binds to 127.0.0.1. Nothing here is reachable from the network without a
 # deliberate change and the review in docs/security_and_trust_boundaries.md section 8.1.
 
@@ -12,22 +17,30 @@ services:
     image: postgres:16.15-alpine
     profiles: ["local"]
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-negotiation}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-negotiation}
-      POSTGRES_DB: ${POSTGRES_DB:-negotiation}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_negotiation}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_negotiation}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_negotiation}
       # Deterministic collation so ordering in tests does not depend on the host locale.
       POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
     ports:
-      # 55432, not 5432: a host PostgreSQL on the default port is common enough that using it
-      # would make the documented start-up command fail on a clean machine. Override with
-      # POSTGRES_PORT. The container-internal port is unchanged.
+      # host:container. The container port is always 5432 and nothing configurable changes it.
+      # The published host port defaults to 55432 because 5432 is frequently already taken by
+      # another project or a native install, which made the documented start-up command fail.
+      # POSTGRES_PORT moves the host side only; set it to 5432 if that port is free for you.
+      #
+      # Services inside this Compose network reach the database at `postgres:5432`, the service
+      # name and the container port. They never use the published host port, so changing
+      # POSTGRES_PORT can never require a code change.
       - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
-        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-negotiation} -d ${POSTGRES_DB:-negotiation}"]
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-agent_negotiation} -d ${POSTGRES_DB:-agent_negotiation}",
+        ]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -58,6 +71,7 @@ services:
       - "--mnemonic"
       - "test test test test test test test test test test test junk"
     ports:
+      # Same rule as PostgreSQL: services inside the network use `anvil:8545`.
       - "127.0.0.1:${ANVIL_PORT:-8545}:8545"
     healthcheck:
       test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8545"]
@@ -71,6 +85,10 @@ services:
 
 volumes:
   postgres-data:
+    # An explicit name, so the volume is `agent_negotiation_postgres_data` exactly rather than
+    # the project prefix plus a generic key. It is this project's database and no other's;
+    # `make reset-db` is the only thing that destroys it.
+    name: agent_negotiation_postgres_data
 
 networks:
   # Agent services join `agents` only, so they are reachable from the backend and from nothing

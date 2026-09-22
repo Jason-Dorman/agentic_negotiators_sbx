@@ -14,6 +14,7 @@ Governance documents for the Two-Agent Negotiation and Settlement Sandbox. Read 
 | [test_strategy.md](test_strategy.md) | Test layers, acceptance mapping A01 to A17, CI gates, coverage thresholds | Writing or reviewing tests |
 | [build_plan.md](build_plan.md) | Stages 0 to 6 with exit conditions and working agreements | Planning the next piece of work |
 | [contributing.md](contributing.md) | Repository layout, import boundaries, code standards, workflow, review checklist | Before every PR |
+| [runbook.md](runbook.md) | Local startup, database isolation and ports, keys and secrets; recovery, funding, replay and export as they arrive | Running the stack; any operational procedure |
 | [decision_log.md](decision_log.md) | ADRs with rationale; includes the assumptions made where the spec was silent | Before changing a decision; when adding one |
 | [open_questions.md](open_questions.md) | Questions for the product owner: what is still open, the reasoning behind each recommendation, and a dated record of what has been answered | Now, and whenever an assumption needs confirming |
 | [engineering-principles.md](engineering-principles.md) | General engineering principles (SOLID, coupling, cohesion, testing mindset) | Background reading |
@@ -22,7 +23,6 @@ Documents to be added during the build:
 
 | Document | Stage |
 |---|---|
-| `runbook.md` | Started in stage 2, completed in stage 5 |
 | `deployments/<chain>-<date>.json` | Stages 1 and 5 |
 | `evidence/` | Stages 3, 5, 6 |
 | `results-v0.1.md` | Stage 6 |

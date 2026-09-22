@@ -29,17 +29,20 @@ flowchart LR
 **Deliverables**
 - Git repository initialized (done, 21 September 2026); directory layout per spec 10.2 with a `src/` layout inside the three Python packages ([ADR-034](decision_log.md)); `.gitignore`, `.gitattributes`, `.editorconfig`, `infra/.env.example`.
 - `LICENSE` (Apache-2.0) and `NOTICE` at the repository root (done, 21 September 2026); `SPDX-License-Identifier: Apache-2.0` as the first line of every `.sol` file from stage 1, enforced from now by `infra/scripts/check_spdx.py` in the pre-commit hook and the CI secret-scan job ([ADR-032](decision_log.md)).
-- `infra/secrets/` git-ignored, with `infra/scripts/generate_keys.py` producing `env:` refs for the local profile and encrypted keystores for Sepolia ([ADR-023](decision_log.md)). Loading is the `KeyHolder` in `services/agent/src/agent/keys/`, which arrives with the agent service in stage 2; ADR-023 already places the first exercise of the `keystore:` path there.
+- `infra/secrets/` git-ignored. Keystore handling is split, and only the first half is stage 0 work:
+  - **Generation — complete.** `infra/scripts/generate_keys.py` produces `env:` refs for the local profile and encrypted web3 keystores for Sepolia ([ADR-023](decision_log.md)).
+  - **Runtime loading through `KeyHolder` — intentionally deferred to stage 2**, under the same ADR, which already places the first exercise of the `keystore:` path in the stage 2 tests. `KeyHolder` lives in `services/agent/src/agent/keys/` and is built with the agent service it serves, not ahead of it. When it lands it holds the existing boundary: a signing key stays server-side inside the agent process and never reaches a model prompt, the browser bundle, an evidence export, an ordinary log line, or the other agent instance. Stage 0 has not delivered "generation and loading"; it has delivered generation.
 - Toolchains pinned ([ADR-033](decision_log.md)): `uv` workspace for `services/api`, `services/agent`, `packages/protocol` (Python 3.12, one `uv.lock`); `pnpm` workspace for `apps/web` and the TypeScript side of `packages/protocol`; Foundry v1.8.3 for `contracts/`, Solidity 0.8.28.
-- Docker Compose local profile with PostgreSQL 16.15 and Anvil on chain 31337; health checks on both; a second database for the integration suite. PostgreSQL publishes on 55432 so a host PostgreSQL does not block start-up.
+- Docker Compose local profile with PostgreSQL 16.15 and Anvil on chain 31337; health checks on both; a second database for the integration suite. The stack is namespaced away from the operator's other projects: Compose project `agent_negotiation`, volume `agent_negotiation_postgres_data`, database and role `agent_negotiation`, and a published host port defaulting to 55432 rather than 5432. The container port stays 5432 and services inside the network use `postgres:5432`, so `POSTGRES_PORT` is a host-side default that no application code reads.
 - CI pipeline skeleton (`.github/workflows/ci.yml`) with one job per gate in [test_strategy.md](test_strategy.md) section 10. Gates with nothing to check yet carry `if: false` and report as skipped, never as passed, each naming the stage that turns it on.
 - Pre-commit hooks: format, lint, type check, secret scan, SPDX header.
 - The import contract from [contributing.md](contributing.md) section 1.1 written out in `.importlinter`, active from stage 2.
+- `docs/runbook.md` started, at the product owner's direction, with local startup, database isolation and the ports, and key generation. Q12 had placed it at stage 2; it still grows in every stage and is completed in stage 5.
 - `CLAUDE.md` and `docs/README.md` index.
 
-**Exit condition (met):** `docker compose --profile local up` starts PostgreSQL and Anvil, both reporting healthy; `make ci` runs every gate the stage has earned and passes; each toolchain's test command runs green.
+**Exit condition (met):** `docker compose --profile local up` starts PostgreSQL and Anvil, both reporting healthy; all stage 0 verification and repository gates pass with zero failures; each toolchain's test command runs green.
 
-One deviation from the exit condition as written, taken deliberately: the Python suite is not empty. It holds 15 tests covering `secret_scan.py` and `check_spdx.py`. Both are merge gates, and a gate that has never been shown a failing input is a gate that passes forever; shipping either untested would have contradicted [contributing.md](contributing.md) section 5. The TypeScript and Foundry suites are empty as specified.
+The earlier wording asked for "zero tests, zero failures", which read as though an empty suite were the goal. It was not: what stage 0 owed was a working gate in each toolchain, and a gate is only working if something has shown it failing. The bootstrap suite is **15 Python tests** over `secret_scan.py` and `check_spdx.py`, the two scripts stage 0 turns into merge gates. Writing them paid for itself before the first commit — they are what caught the scanner flagging its own fixtures and the mypy hook being invoked with no target. The TypeScript and Foundry suites are genuinely empty and pass, which is the correct state for them until stages 1 and 4.
 
 ## Stage 1: Protocol and contracts
 
@@ -58,7 +61,7 @@ One deviation from the exit condition as written, taken deliberately: the Python
 - Agent service: internal API, `DeterministicPolicy`, `MandateValidator`, signer, key holder, HMAC auth.
 - Compose profile runs api, agent-a, agent-b.
 - Integration test harness with Anvil and PostgreSQL.
-- `docs/runbook.md` created as a living document: local startup, recovering pending transactions. It grows in every subsequent stage and is completed in stage 5.
+- `docs/runbook.md` continues (started in stage 0): recovering pending transactions, and the `KeyHolder` loading procedure deferred from stage 0 under [ADR-023](decision_log.md). It grows in every subsequent stage and is completed in stage 5.
 
 **Exit condition:** A02 (deterministic settlement) and A03 (infeasible no-deal) complete end to end via the API with evidence rows in every table; A06, A13, A14 integration tests pass; the export route produces a document that validates against the schema and the reconstruction tool agrees with it (A15).
 

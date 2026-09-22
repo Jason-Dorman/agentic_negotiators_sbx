@@ -74,13 +74,19 @@ Docker with Compose. Exact versions are in [ADR-033](docs/decision_log.md).
 
 ```sh
 make setup                  # uv sync, pnpm install, pre-commit install
-make up                     # PostgreSQL on 55432 and Anvil on 8545, both health-checked
+make up                     # PostgreSQL and Anvil, waits for both health checks
 make ci                     # every gate the build has earned so far
 make down                   # stop, keeping the database volume
 ```
 
 `make help` lists the rest. Configuration lives in `infra/.env.example`; copy it to `infra/.env`,
 which is git-ignored, when a stage needs one. The local profile runs on defaults without it.
+
+The stack keeps to itself: its own Compose project (`agent_negotiation`), its own volume
+(`agent_negotiation_postgres_data`), its own database and role, and a host port that defaults to
+55432 rather than 5432 so it does not collide with another project's PostgreSQL. `POSTGRES_PORT`
+moves the published host port; inside the network, services use `postgres:5432`. See
+[docs/runbook.md](docs/runbook.md) section 2.
 
 The operator runbook — funding a testnet demonstration, recovery, replay and export — starts in
 stage 2 at `docs/runbook.md` and is completed in stage 5.

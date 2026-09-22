@@ -184,29 +184,33 @@ Entries ADR-001 to ADR-010 restate spec Appendix B. Entries from ADR-011 are dec
 **Consequences:** The SPDX identifier is compiled into contract metadata and therefore into the deployed artifact and its verified source on Etherscan, so it must be right before stage 1 rather than corrected later. New dependencies must be license-compatible, and a pull request adding one records its license.
 
 ## ADR-033: Stage 0 toolchain pins
-**Status:** accepted
+**Status:** accepted (confirmed by the product owner, 22 September 2026)
 **Context:** [architecture.md](architecture.md) section 10 named the technology choices and deferred the exact versions to "implementation start, pinned in lockfiles, and recorded in the decision log". Stage 0 is that moment.
 **Decision:** The versions below, pinned in `uv.lock`, `pnpm-lock.yaml`, `contracts/foundry.toml` and the image tags in `infra/compose.local.yaml`. CI installs the same versions from the same files, so a green local run and a green pipeline mean the same thing.
 
-| Component | Pin | Where |
-|---|---|---|
-| Python | 3.12 | `.python-version`, `requires-python = ">=3.12,<3.13"` |
-| uv | 0.12.x | `uv.lock` lockfile version |
-| Node | 22 LTS | `.nvmrc`, `engines.node` |
-| pnpm | 11.27.1 | `packageManager` |
-| TypeScript | 6.0.3 | root `devDependencies` |
-| ESLint / typescript-eslint | 10.11.0 / 8.70.1 | root `devDependencies` |
-| React / Vite / Vitest | 19.3.0 / 8.3.0 / 5.0.1 | `apps/web/package.json` |
-| Foundry | v1.8.3 | `FOUNDRY_VERSION` in CI, image tag in Compose |
-| Solidity | 0.8.28, `evm_version = "cancun"` | `contracts/foundry.toml` |
-| PostgreSQL | 16.15 | `postgres:16.15-alpine` |
+| Component | Pin | Where | Latest available on 22 September 2026 |
+|---|---|---|---|
+| Python | 3.12 (3.12.3 resolved) | `.python-version`, `requires-python = ">=3.12,<3.13"` | — |
+| uv | 0.12.17 | Installed toolchain; `uv.lock` revision 3 | 0.12.17 |
+| Node | 22.20.0 (22 LTS) | `.nvmrc`, `engines.node` | — |
+| Corepack | 0.34.0 (bundled with Node 22.20.0) | Node distribution | — |
+| pnpm | 11.27.1 | `packageManager`, `engines.pnpm` | 12.5.1 |
+| TypeScript | 6.0.3 | root `devDependencies` | 7.0.2 |
+| typescript-eslint | 8.70.1 | root `devDependencies` | 8.70.1 |
+| ESLint | 10.11.0 | root `devDependencies` | 10.11.0 |
+| React / Vite / Vitest | 19.3.0 / 8.3.0 / 5.0.1 | `apps/web/package.json` | same |
+| Foundry | v1.8.3 | `FOUNDRY_VERSION` in CI, image tag in Compose | v1.8.3 (latest tagged release) |
+| Solidity | 0.8.28, `evm_version = "cancun"` | `contracts/foundry.toml` | — |
+| PostgreSQL | 16.15-alpine | `infra/compose.local.yaml` | 16.15 on the 16 line |
 
-**Rationale for the two pins that are not simply "latest":**
+**Two pins sit behind the newest major. Each is a reproduced incompatibility, not a policy of caution.**
 
-- **pnpm 11, not 12.** pnpm 12 ships its entry point as `bin/pnpm.mjs`; the Corepack bundled with Node 22 LTS resolves `bin/pnpm.cjs` and fails to launch it. Pinning the newest pnpm that Corepack can activate means `corepack enable pnpm` is the whole setup step, locally and in CI, with no second installer to keep in step. Revisit when Node's bundled Corepack updates.
-- **TypeScript 6, not 7.** typescript-eslint 8.70.1 declares `typescript >=4.8.4 <6.1.0`. TypeScript 7 is the Go rewrite and the lint toolchain has not caught up; taking it would mean dropping `strict-type-checked`, which is the rule set [contributing.md](contributing.md) section 2.2 requires. Revisit when typescript-eslint supports 7.
+- **pnpm 11.27.1, not 12.5.1.** Reproduced on Node 22.20.0 with its bundled Corepack 0.34.0: `corepack prepare pnpm@12.5.1 --activate` downloads the package, then `pnpm --version` exits non-zero with `Error: Cannot find module '~/.cache/node/corepack/v1/pnpm/12.5.1/bin/pnpm.cjs'`. The unpacked 12.5.1 tree contains `bin/pnpm.mjs` and no `bin/pnpm.cjs`; Corepack 0.34.0 resolves the `.cjs` path. pnpm 11.27.1 and 10.34.5 were both checked and both ship `bin/pnpm.cjs`. Pinning 11.27.1 keeps `corepack enable pnpm` as the entire setup step locally and in CI, with no second installer to hold in step. This is a statement about these two versions on this Node line, not about pnpm 12 generally; revisit when the Corepack bundled with the supported Node LTS can activate it.
+- **TypeScript 6.0.3, not 7.0.2.** typescript-eslint 8.70.1 — the current release — declares `peerDependencies.typescript: ">=4.8.4 <6.1.0"`. TypeScript 7.0.2 is the Go rewrite and falls outside that range. Taking it would mean running typescript-eslint unsupported or dropping `strict-type-checked`, which is the rule set [contributing.md](contributing.md) section 2.2 requires, and the type checker is one of the merge gates in [test_strategy.md](test_strategy.md) section 10. 6.0.3 is the newest release inside the supported range. Revisit when typescript-eslint declares support for 7.
 
-**Consequences:** Solidity 0.8.28 with `evm_version = "cancun"` is valid on both Anvil and Sepolia, and the optimizer settings here are recorded in the deployment manifest, so changing anything in the `[profile.default]` block changes the deployed artefact and is itself a decision-log entry. The published PostgreSQL port defaults to 55432 rather than 5432, because a host PostgreSQL on the default port would make the documented start-up command fail on a clean machine; `POSTGRES_PORT` overrides it and the container-internal port is unchanged.
+**Rule this sets:** a major version is not adopted merely for being newer when doing so breaks a required lint or type-checking gate or leaves the supported toolchain. The gate wins; the pin waits for the ecosystem. Each such pin names the version that was rejected, the version that was taken, and the error that was reproduced, so the next person can retest it in one command rather than re-deriving the reason.
+
+**Consequences:** Solidity 0.8.28 with `evm_version = "cancun"` is valid on both Anvil and Sepolia, and the optimizer settings in `[profile.default]` are recorded in the deployment manifest, so changing anything in that block changes the deployed artefact and is itself a decision-log entry. Both lockfiles are committed with a real text diff rather than marked binary, because a reviewer has to see a new dependency arrive in order to record its license ([contributing.md](contributing.md) section 1).
 
 ## ADR-034: `src/` layout for the three Python packages
 **Status:** accepted
@@ -221,3 +225,19 @@ Entries ADR-001 to ADR-010 restate spec Appendix B. Entries from ADR-011 are dec
 **Decision:** `web3` is declared as `negotiation-protocol[tools]`, not a core dependency. The agent service installs `negotiation-protocol` and therefore does not get web3.
 **Rationale:** Isolation is meant to be structural rather than procedural. If web3 is present in the agent's environment, "the agent never talks to the chain" is a convention that a future import can break silently; if it is absent, the same mistake is an `ImportError` at start-up. The import-linter contract forbids it as well, so the rule is enforced twice, at different times.
 **Consequences:** Anything that runs the reconstruction tool installs the extra explicitly. The `agent-has-no-database-and-no-rpc` contract in `.importlinter` names `web3` alongside `api`, `sqlalchemy`, `asyncpg` and `alembic`.
+
+## ADR-036: The local PostgreSQL is namespaced away from the operator's other projects
+**Status:** accepted (directed by the product owner, 22 September 2026)
+**Context:** `docker compose --profile local up` failed on the product owner's machine with `ports are not available: exposing port TCP 127.0.0.1:5432`, because another project already published PostgreSQL there. The wider risk is worse than a failed start-up: a stack that reaches a database on a shared default port, under a default name, can silently attach to another project's data instead of failing.
+**Decision:** Four separate namespaces, each explicit:
+
+| | Value | Set in |
+|---|---|---|
+| Compose project | `agent_negotiation` | `name:` in `compose.yaml` |
+| Volume | `agent_negotiation_postgres_data` | explicit `name:` under `volumes:`, so the volume is not a generic key under a project prefix |
+| Database and role | `agent_negotiation` | `POSTGRES_DB`, `POSTGRES_USER` |
+| Published host port | `${POSTGRES_PORT:-55432}` | `ports:` |
+
+The container port stays 5432 and is not configurable. Everything inside the Compose network reaches the database at `postgres:5432` — the service name and the container port. `POSTGRES_PORT` moves the published host side only, and no application code reads it, so a developer may use 5432, 55432 or any free port without a code change. The same host-port versus service-name rule applies to Anvil (`anvil:8545`).
+**Rationale:** A failure to connect is a good failure; connecting to the wrong database is a bad one, and the default port under a default name is how the second happens. Naming the database and role for the project rather than `postgres` means a stray connection to the wrong server is refused rather than served. Binding the host port to a non-default value by default makes the documented start-up command work on a machine that already runs PostgreSQL, which is most machines.
+**Consequences:** `infra/.env.example` carries a host URL and a container URL and says which caller uses which; [runbook.md](runbook.md) section 2 documents the distinction, how to change the host port, and what the port-conflict error means. `make reset-db` destroys `agent_negotiation_postgres_data` and nothing else. Renaming the Compose project, the database or the role on an existing installation orphans the old volume rather than renaming it, so a rename is a reset and the runbook says so.
