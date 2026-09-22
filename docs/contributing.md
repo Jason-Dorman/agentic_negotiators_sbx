@@ -24,6 +24,8 @@ The core mantra from [engineering-principles.md](engineering-principles.md) appl
 | `infra/` | Compose profiles, `.env.example`, keystore directory (git-ignored) | |
 | `docs/` | Governance documents, runbook, deployment manifests, evidence exports | |
 
+The project is licensed Apache-2.0. `LICENSE` and `NOTICE` live at the repository root; do not vendor code under an incompatible license, and record any new dependency's license in the pull request.
+
 ### 1.1 Import boundaries (backend)
 
 Enforced by an `import-linter` contract in CI.
@@ -71,6 +73,7 @@ Changes to any of these require a reviewer to walk the data classification table
 
 ### 2.3 Solidity
 
+- `// SPDX-License-Identifier: Apache-2.0` is the first line of every `.sol` file. The identifier is compiled into contract metadata, so it is part of the deployed artifact, not a comment ([ADR-032](decision_log.md)).
 - `^0.8.24` or the pinned version in `foundry.toml`; optimizer settings recorded in the manifest.
 - OpenZeppelin 5.x for `ERC20`, `EIP712`, `ECDSA`, `SafeERC20`, `ReentrancyGuard`. No other dependencies.
 - Custom errors, never `require` strings. Named per [protocol.md](protocol.md) 8.3.

@@ -67,6 +67,12 @@ Start at [docs/README.md](docs/README.md). The originating specification is [doc
 
 Not yet runnable. Stage 0 of the build plan adds the toolchain, Compose profile, and CI. This section will then describe local startup; the operator runbook will cover funding a testnet demonstration, recovery, replay, and export.
 
+## License
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Every Solidity source carries `// SPDX-License-Identifier: Apache-2.0` as its first line.
+
+All assets, balances, prices, and mandates in this project are manufactured experiment inputs on test networks. Nothing here is a financial product or a claim about real economic value.
+
 ## Governance in one paragraph
 
 Docs and code move together: any change to protocol, API, schema, behaviour, or a requirement updates the affected documents in the same change set. Decisions are recorded in [docs/decision_log.md](docs/decision_log.md). Gaps are raised with the product owner in [docs/open_questions.md](docs/open_questions.md) rather than assumed.

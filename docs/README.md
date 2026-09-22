@@ -15,7 +15,7 @@ Governance documents for the Two-Agent Negotiation and Settlement Sandbox. Read 
 | [build_plan.md](build_plan.md) | Stages 0 to 6 with exit conditions and working agreements | Planning the next piece of work |
 | [contributing.md](contributing.md) | Repository layout, import boundaries, code standards, workflow, review checklist | Before every PR |
 | [decision_log.md](decision_log.md) | ADRs with rationale; includes the assumptions made where the spec was silent | Before changing a decision; when adding one |
-| [open_questions.md](open_questions.md) | Questions for the product owner with provisional answers currently assumed | Now, and whenever an assumption needs confirming |
+| [open_questions.md](open_questions.md) | Questions for the product owner: what is still open, the reasoning behind each recommendation, and a dated record of what has been answered | Now, and whenever an assumption needs confirming |
 | [engineering-principles.md](engineering-principles.md) | General engineering principles (SOLID, coupling, cohesion, testing mindset) | Background reading |
 
 Documents to be added during the build:

@@ -73,6 +73,7 @@ One row per deployment manifest.
 | `code_hashes` | `JSONB NOT NULL` | keccak of runtime bytecode per contract |
 | `compiler` | `JSONB NOT NULL` | solc version, optimizer, runs, evm version |
 | `explorer_base_url` | `TEXT NULL` | |
+| `ens` | `JSONB NULL` | display names resolved once at deploy time: `{ "root": "…", "exchange": "…", "base_token": "…", "quote_token": "…", "resolved_at": "…" }`. Null where the chain has no ENS deployment or no names were registered. Never read by any identity check ([ADR-030](decision_log.md)) |
 | `manifest` | `JSONB NOT NULL` | full manifest as written by the deploy script |
 | `deployed_at` | `TIMESTAMPTZ NOT NULL` | |
 
@@ -127,6 +128,8 @@ Constraint: `outcome_kind <> 'pending'` implies `state = 'terminal'` and `outcom
 | `mandate_hash` | `TEXT NOT NULL` | sha256 of canonical JSON, recorded in `decisions.observation_hash` inputs |
 
 Unique: `(run_id, party)`. Rows are immutable after insert (trigger raises on `UPDATE`).
+
+Storage is plaintext. Confidentiality comes from process isolation, the access rule below, and the classification in section 7, not from encryption at rest; the operator host is trusted. Column-level encryption was considered and declined for v0.1 ([ADR-031](decision_log.md)): encrypting the two `NUMERIC(78,0)` mandate fields makes them `BYTEA` and moves the feasible-interval and metrics computations out of SQL, while the decryption key would live in the same `.env` on the same host as the database, so it would defend only a stolen dump and would not touch the leakage threat that matters here.
 
 Access: only the mandate repository used by provisioning, the observer route, the export route with `include_private`, and the metrics calculator may read this table. The observation builder imports the repository but is forbidden by an import-boundary test from touching the opponent's row; it is called with the acting party and receives only that row.
 

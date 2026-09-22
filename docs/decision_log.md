@@ -73,19 +73,19 @@ Entries ADR-001 to ADR-010 restate spec Appendix B. Entries from ADR-011 are dec
 **Consequences:** Private feedback never transits to the backend before the turn completes as a batch; the same interface serves deterministic and model policies.
 
 ## ADR-013: Decision envelope with separate `explanation`
-**Status:** accepted (assumption)
+**Status:** accepted (confirmed by the product owner, 21 September 2026)
 **Context:** Spec 5.4 says the decision has exactly three shapes and extra fields are rejected. Spec 3.2 allows an optional operator explanation.
 **Decision:** The model returns `{ "decision": <one of three shapes>, "explanation"?: string }`. The `decision` object is strict; `explanation` is capped at 280 characters, operator-only, and labelled a self-report.
 **Consequences:** Both spec statements hold without ambiguity. Schema in `packages/protocol/schemas/agent_decision.v1.json`.
 
 ## ADR-014: Anthropic Claude API as the model provider
-**Status:** accepted (assumption)
+**Status:** accepted (confirmed by the product owner, 21 September 2026)
 **Context:** Spec does not name a provider or model ID.
 **Decision:** Official `anthropic` Python SDK. Default `claude-opus-5`, configurable per run and per side. Structured outputs via `messages.parse` with a Pydantic decision envelope. Adaptive thinking on with `effort` recorded per run. SDK automatic retries set to 0 so the single repair is the only retry and cost accounting is exact.
-**Consequences:** "Sampling settings" in spec 11.3 are recorded as `effort` because current models do not accept temperature. Seed is recorded as unsupported. Model client is behind an interface so another provider is an adapter, not a rewrite.
+**Consequences:** "Sampling settings" in spec 11.3 are recorded as `effort` because current models do not accept temperature. Seed is recorded as unsupported. Model client is behind an interface so another provider is an adapter, not a rewrite; see [ADR-027](#adr-027-cross-provider-pairings-are-a-follow-on-experiment).
 
 ## ADR-015: No server-side model fallbacks
-**Status:** accepted (assumption)
+**Status:** accepted (derived from spec 11.3)
 **Context:** The SDK supports routing a refused request to a fallback model.
 **Decision:** Disabled. A `refusal` stop reason is treated as an invalid response: one repair, then `model_failure`.
 **Rationale:** The recorded `model_id` must be the model that decided; silent substitution would corrupt reproducibility and the model-versus-baseline comparison.
@@ -106,7 +106,7 @@ Entries ADR-001 to ADR-010 restate spec Appendix B. Entries from ADR-011 are dec
 **Decision:** Private routes require `X-Observer-Reveal: true` and are access-logged. This is friction and audit, not a security control; the operator already owns everything.
 
 ## ADR-019: One active run enforced in the database
-**Status:** accepted
+**Status:** accepted (confirmed by the product owner, 21 September 2026)
 **Decision:** A single-row `active_run` table plus `run_leases` with expiry. Relay nonces are serialized under the same lease.
 **Consequences:** Batches run sequentially. Parallel evaluation is a future change requiring per-run relay keys.
 
@@ -116,19 +116,19 @@ Entries ADR-001 to ADR-010 restate spec Appendix B. Entries from ADR-011 are dec
 **Rationale:** Prevents silent overflow and float rounding; keeps the database self-describing.
 
 ## ADR-021: Toolchain
-**Status:** accepted (assumption)
+**Status:** accepted (recorded by the product owner in `CLAUDE.md`)
 **Decision:** Python 3.12 with `uv`, `ruff`, `mypy --strict`, `pytest`; Node LTS with `pnpm`, Vitest, Playwright; Foundry; Alembic; Docker Compose; PostgreSQL 16.
 **Consequences:** Exact pins recorded here when the lockfiles are first committed.
 
 ## ADR-022: Scenario files are JSON validated by schema
-**Status:** accepted (assumption)
+**Status:** accepted (confirmed by the product owner, 21 September 2026)
 **Decision:** `scenarios/*.json` validated against `packages/protocol/schemas/scenario.v1.json`. Batch populations are generated JSON committed with their seed.
 **Rationale:** One serialization format across the repo; no YAML parser dependency.
 
 ## ADR-023: Sepolia participant keys in encrypted keystores
-**Status:** proposed (assumption)
-**Decision:** Local profile uses `env:` key refs generated per run. Sepolia profile uses web3 keystore JSON files with a password from env. Neither is production custody.
-**Open:** confirm with the operator; see [open_questions.md](open_questions.md).
+**Status:** accepted (confirmed by the product owner, 21 September 2026)
+**Decision:** Local profile uses `env:` key refs generated per run. Sepolia profile uses web3 keystore JSON files with a password from env, present from stage 0 rather than retrofitted at stage 5. Neither is production custody.
+**Consequences:** `infra/secrets/` is git-ignored and the secret scan rejects keystore JSON. The keystore path reaches the key holder as a `keystore:` ref; the password reaches it from env; neither is ever a value in the database, a log, or an export. The local profile keeps `env:` refs so a developer needs no password to run the suite.
 
 ## ADR-024: Timeline sentences rendered server-side once
 **Status:** accepted
@@ -143,3 +143,42 @@ Entries ADR-001 to ADR-010 restate spec Appendix B. Entries from ADR-011 are dec
 ## ADR-026: Diagrams are Mermaid
 **Status:** accepted (user instruction, 19 September 2026)
 **Decision:** All diagrams in project documents are Mermaid code blocks. No images or external diagram files.
+
+## ADR-027: Cross-provider pairings are a follow-on experiment
+**Status:** accepted
+**Context:** The product owner wants to pit models from different vendors against each other eventually; the first run is Claude against Claude.
+**Decision:** v0.1 fixes the provider to Anthropic. A cross-provider bake-off is a named follow-on, not a v0.1 requirement. The `ModelClient` interface and the per-side `model_id` already admit it: a second provider is an adapter behind the same interface plus a price-table entry.
+**Consequences:** Two things must exist before such a comparison means anything, and neither is built in v0.1. First, the pairing matrix in the batch evaluator has to grow beyond the four pairings ADR-008 fixes, because a cross-vendor comparison needs its own baseline column. Second, the prompt is a confound: one versioned prompt tuned against one provider's structured-output behaviour will not be neutral across vendors, so the follow-on needs either a provider-neutral prompt held constant or a recorded per-provider prompt version and an honest statement that prompt and model vary together. The results document states this limitation rather than implying the v0.1 numbers generalize across vendors.
+
+## ADR-028: Operator authentication is a static token, and public exposure is gated on a STRIDE review
+**Status:** accepted
+**Context:** Spec and API contract left remote authentication open. The demo runs on localhost.
+**Decision:** A single static bearer token in `OPERATOR_TOKEN`, required on every route except `/health` when it is set, with TLS terminated by a reverse proxy in front of the backend. Development binds to localhost and sets no token.
+**Consequences:** Exposing the UI or backend on a network the operator does not control is a separate decision that requires a STRIDE-structured pass over [security_and_trust_boundaries.md](security_and_trust_boundaries.md) section 5 first, recorded as its own ADR. A static token is a single shared credential with no rotation, no per-user identity, and no revocation short of restarting with a new value; it is adequate for one operator on one host and is not adequate for an audience network. The checklist in security 8 is the minimum, not the review.
+
+## ADR-029: The agent system prompt is a reviewed, versioned file and the mandate cannot override it
+**Status:** accepted
+**Context:** Spec 5 requires the decision schema and protocol rules to hold regardless of mandate content. Mandate `instructions` are free text supplied per run through the API.
+**Decision:** The system prompt lives in versioned files under `services/agent/prompts/` and changes through review like any other source. Its version hash is recorded on every decision. Mandate `instructions` are appended to the prompt in a delimited section introduced as the agent's own private guidance, after the protocol rules and the output schema, and the prompt states that nothing in that section can change the rules above it or the shape of the output.
+**Consequences:** Precedence is prompt-structural, not enforced by the model, so it is backed by the layer that does enforce: the policy signer rejects any action outside the legal set and outside the mandate, and the decision schema is strict with `extra="forbid"`. An instruction that tells the agent to emit a fourth decision shape or to reveal its mandate produces an invalid response, one repair, then `model_failure` — a recorded outcome, not a leak. The isolation suite includes a mandate whose `instructions` attempt exactly that.
+
+## ADR-030: ENS names for the Sepolia deployment are display-only
+**Status:** accepted (confirmed by the product owner, 21 September 2026)
+**Context:** The product owner asked whether the deployment can carry an ENS name. Reasoning in [open_questions.md](open_questions.md) under Q16.
+**Decision:** One name registered on Sepolia ENS with subnames for the exchange and both mock tokens. Names are resolved once, at deployment time, and written into the deployment manifest beside the address they resolved to. No component resolves ENS at run time: not the indexer, not the setup validator, not the signer, not the reconstruction tool. Identity checks continue to compare the manifest address against the chain.
+**Rationale:** A name is mutable state controlled by whoever holds the registration. Canonical chain events are the only source of economic outcome, and a mutable label must never enter that chain of evidence. Display-only keeps the property that the demo can be verified by someone who ignores the names entirely. Sepolia names are also visible only on Sepolia, so they are a demo affordance and not a public identity.
+**Consequences:** A nullable `ens` block in the deployment manifest, the `deployments` API resource, and `deployments.ens` in the database. A name chip beside addresses in the UI, with the address still shown (PRD FR-U10). A17 additionally resolves each recorded name at deployment time and compares it with its manifest address, recording a mismatch as a manifest warning, never as a run failure. Stage 5 does not block on registration: without names, `ens` is null and everything else is unchanged.
+
+## ADR-031: Mandates are stored in plaintext, and the trust assumption is stated
+**Status:** accepted (confirmed by the product owner, 21 September 2026)
+**Context:** `mandate_versions` holds the private experimental inputs whose leakage would invalidate PRD claim 1. Column-level encryption was considered for v0.1.
+**Decision:** No encryption at rest. Mandate confidentiality rests on process and credential isolation, the repository access rule in [data_model.md](data_model.md) 3.4, the import-boundary test that prevents the observation builder reading the opponent's row, and the classification table. The security document states this in those words rather than implying the database is protected.
+**Rationale:** Encryption would defend a stolen database file, not the leakage path that matters, and the decryption key would sit in the same `.env` on the same host as the database. The cost is concrete: the two mandate amounts are `NUMERIC(78,0)`, so encrypting them makes them `BYTEA` and moves the feasible-interval and metrics computations out of SQL, while `mandate_hash` must still be computed over plaintext canonical JSON and so gains nothing.
+**Consequences:** An exported database dump contains readable mandates, which the retention statement and the export defaults must account for; the default export already excludes private data (ADR-005, FR-E8). If the stance changes, the cheapest upgrade is pgcrypto on `instructions` alone, which is free text and never compared or aggregated, leaving the numeric fields queryable.
+
+## ADR-032: Apache-2.0
+**Status:** accepted (confirmed by the product owner, 21 September 2026)
+**Context:** The repository was public with no license, which grants a reader no rights at all.
+**Decision:** Apache-2.0. `LICENSE` and `NOTICE` at the repository root. `// SPDX-License-Identifier: Apache-2.0` is the first line of every Solidity source.
+**Rationale:** Apache-2.0 carries an explicit patent grant and the `NOTICE` convention, and is the usual choice for contract and infrastructure code. MIT would have been equally safe and was rejected only for being less explicit.
+**Consequences:** The SPDX identifier is compiled into contract metadata and therefore into the deployed artifact and its verified source on Etherscan, so it must be right before stage 1 rather than corrected later. New dependencies must be license-compatible, and a pull request adding one records its license.

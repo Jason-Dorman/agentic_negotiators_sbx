@@ -25,7 +25,9 @@ flowchart LR
 ## Stage 0: Scaffold
 
 **Deliverables**
-- Git repository initialized; directory layout per spec 10.2; `.gitignore`, `.editorconfig`, `.env.example`.
+- Git repository initialized (done, 21 September 2026); directory layout per spec 10.2; `.gitignore`, `.editorconfig`, `.env.example`.
+- `LICENSE` (Apache-2.0) and `NOTICE` at the repository root (done, 21 September 2026); `SPDX-License-Identifier: Apache-2.0` as the first line of every `.sol` file from stage 1 ([ADR-032](decision_log.md)).
+- `infra/secrets/` git-ignored, with keystore generation and loading in place from the start rather than at stage 5 ([ADR-023](decision_log.md)).
 - Toolchains pinned: `uv` workspace for `services/api`, `services/agent`, `packages/protocol` (Python); `pnpm` workspace for `apps/web` and the TypeScript side of `packages/protocol`; Foundry for `contracts/`.
 - Docker Compose local profile with PostgreSQL and Anvil; health checks.
 - CI pipeline skeleton with the gates in [test_strategy.md](test_strategy.md) section 10, initially running lint and an empty test suite.
@@ -51,7 +53,7 @@ flowchart LR
 - Agent service: internal API, `DeterministicPolicy`, `MandateValidator`, signer, key holder, HMAC auth.
 - Compose profile runs api, agent-a, agent-b.
 - Integration test harness with Anvil and PostgreSQL.
-- Runbook started: local startup, recovering pending transactions.
+- `docs/runbook.md` created as a living document: local startup, recovering pending transactions. It grows in every subsequent stage and is completed in stage 5.
 
 **Exit condition:** A02 (deterministic settlement) and A03 (infeasible no-deal) complete end to end via the API with evidence rows in every table; A06, A13, A14 integration tests pass; the export route produces a document that validates against the schema and the reconstruction tool agrees with it (A15).
 
@@ -79,9 +81,11 @@ flowchart LR
 
 **Deliverables**
 - Sepolia deployment with manifest committed under `docs/deployments/`.
-- Compose Sepolia profile; keystore handling; funding script for fresh test wallets.
+- Compose Sepolia profile; funding script for fresh test wallets. Keystore handling already exists from stage 0; this stage only supplies the Sepolia keystores and password.
+- `SEPOLIA_RPC_URL` from an Alchemy application created for this project alone, so rate limits and usage are attributable to it; indexer poll interval 4 s, with the throttling response recorded in the runbook.
 - Runbook completed: funding a testnet demonstration, recovery, replay, export.
 - Confirmation threshold 2 and finalized-head tracking verified against a real RPC.
+- Sepolia ENS names registered and pinned into the deployment manifest, display-only ([ADR-030](decision_log.md)). If registration is not ready, the deployment ships without names and they are added afterwards; stage 5 does not wait on them.
 
 **Exit condition:** A17 passes; selected live scenarios (one settlement, one no-deal, one operator abort) execute on Sepolia, replay in the UI, and their exports are saved. Explorer links resolve to the manifest addresses.
 
