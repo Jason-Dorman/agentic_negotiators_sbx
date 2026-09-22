@@ -1,0 +1,13 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Lockfiles are generated, so collapse them by default in review. They keep a real text diff:
+# a new dependency has to be visible to the reviewer, whose job includes recording its license
+# (docs/contributing.md section 1).
+uv.lock         linguist-generated=true
+pnpm-lock.yaml  linguist-generated=true

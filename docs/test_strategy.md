@@ -54,7 +54,7 @@
 | A14 | Local reorg simulation | Integration | `integration/test_a14_reorg.py` | Anvil `evm_snapshot`, index a settlement, `evm_revert`, mine a different block; assert projection rollback, run paused, UI state removes success |
 | A15 | Event and calldata reconstruction | Protocol tool + integration | `packages/protocol/tests/test_reconstruct.py` | Run reconstruction against Anvil with the database dropped; compare to the export |
 | A16 | Replay: identical timeline and balances, no model calls or txs | Integration + web | `integration/test_a16_replay.py`, `e2e/replay.spec.ts` | Fake model call counter and fake RPC send counter must both be zero |
-| A17 | Public demo identity matches manifest | Manual + automated | `validation/test_manifest.py`, runbook step | Automated: code hash and chain ID check refuses mismatched deployment. Manual: explorer links open the manifest addresses |
+| A17 | Public demo identity matches manifest | Manual + automated | `validation/test_manifest.py`, runbook step | Automated: code hash and chain ID check refuses mismatched deployment; where `manifest.ens` is present, each recorded name is resolved once at deployment time and compared with its manifest address, a mismatch producing a manifest warning and never a run failure. Manual: explorer links open the manifest addresses |
 
 ## 4. Contract test plan
 
@@ -143,6 +143,8 @@ Live model runs are not deterministic and are not CI gates. They are **recorded 
 | Playwright E2E | merge to main |
 | Gas snapshot regression | merge, override by decision-log entry |
 | Coverage: contracts 100 percent lines on `NegotiationExchange`; agent validator and signer 100 percent branches; backend 85 percent lines | merge |
+
+The coverage thresholds were confirmed by the product owner on 21 September 2026. They are deliberately uneven: the contract and the two components that convert a model's words into authority are the places where a missed branch is an incorrect transfer, while the backend's remaining 15 percent is mostly error plumbing that integration tests exercise end to end.
 
 ## 11. Test data and fixtures policy
 

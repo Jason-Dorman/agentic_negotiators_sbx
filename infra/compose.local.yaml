@@ -1,0 +1,100 @@
+# Compose profile: local (docs/architecture.md section 4).
+#
+# Stage 0 brings up the two dependencies the rest of the stack is built against: PostgreSQL 16
+# and an Anvil chain on 31337. The api, agent-a, agent-b and web services are added in stage 2
+# of docs/build_plan.md, on the networks already declared below.
+#
+# Isolation from the operator's other projects is deliberate and has four parts: the Compose
+# project name `agent_negotiation` (see compose.yaml), a volume with an explicit project-scoped
+# name, a database and role named for this project rather than `postgres`, and a published host
+# port that defaults away from 5432. Nothing here attaches to another stack's data.
+#
+# Every published port binds to 127.0.0.1. Nothing here is reachable from the network without a
+# deliberate change and the review in docs/security_and_trust_boundaries.md section 8.1.
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    profiles: ["local"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agent_negotiation}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_negotiation}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_negotiation}
+      # Deterministic collation so ordering in tests does not depend on the host locale.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      # host:container. The container port is always 5432 and nothing configurable changes it.
+      # The published host port defaults to 55432 because 5432 is frequently already taken by
+      # another project or a native install, which made the documented start-up command fail.
+      # POSTGRES_PORT moves the host side only; set it to 5432 if that port is free for you.
+      #
+      # Services inside this Compose network reach the database at `postgres:5432`, the service
+      # name and the container port. They never use the published host port, so changing
+      # POSTGRES_PORT can never require a code change.
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-agent_negotiation} -d ${POSTGRES_DB:-agent_negotiation}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - backend
+    restart: unless-stopped
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:v1.8.3
+    profiles: ["local"]
+    # The image ships every Foundry binary; pick one explicitly.
+    entrypoint: ["anvil"]
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8545"
+      - "--chain-id"
+      - "31337"
+      - "--accounts"
+      - "10"
+      - "--balance"
+      - "10000"
+      # Anvil's published test mnemonic. These keys are worthless by construction and are the
+      # reason the local profile needs no keystore password
+      # (ADR-023, docs/security_and_trust_boundaries.md section 7).
+      - "--mnemonic"
+      - "test test test test test test test test test test test junk"
+    ports:
+      # Same rule as PostgreSQL: services inside the network use `anvil:8545`.
+      - "127.0.0.1:${ANVIL_PORT:-8545}:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+    # An explicit name, so the volume is `agent_negotiation_postgres_data` exactly rather than
+    # the project prefix plus a generic key. It is this project's database and no other's;
+    # `make reset-db` is the only thing that destroys it.
+    name: agent_negotiation_postgres_data
+
+networks:
+  # Agent services join `agents` only, so they are reachable from the backend and from nothing
+  # else (docs/architecture.md section 4, docs/security_and_trust_boundaries.md section 2).
+  backend:
+    driver: bridge
+  agents:
+    driver: bridge
+    internal: true

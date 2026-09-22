@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | 0.1.0 |
-| **Date** | 19 September 2026 |
+| **Date** | 22 September 2026 |
 | **Status** | Draft for build |
 | **Source** | Spec sections 4, 5, 8, 9, 10 |
 | **Related** | [prd.md](prd.md), [protocol.md](protocol.md), [api_contract.md](api_contract.md), [data_model.md](data_model.md), [security_and_trust_boundaries.md](security_and_trust_boundaries.md), [decision_log.md](decision_log.md) |
@@ -149,7 +149,7 @@ One codebase, two runtime instances (A and B) configured with role, mandate acce
 | `keys/` | Load key from environment or keystore; expose sign only |
 | `state/` | Run-scoped in-memory record of approved config and prior own decisions, backed by the controller's provisioning call |
 
-The service has no database connection and no RPC connection. Its only outbound network dependency is the model provider, and only for `ModelPolicy`.
+The service has no database connection and no RPC connection. Its only outbound network dependency is the model provider, and only for `ModelPolicy`. The mandate reaches it once at provisioning, as a `keystore:` or `env:` key ref plus mandate values; it never reaches the other instance.
 
 ### 3.4 Contracts (`contracts/`)
 
@@ -354,20 +354,23 @@ The model client lives only in the agent service and is wrapped behind `ModelCli
 
 | Concern | Choice |
 |---|---|
-| Provider and SDK | Anthropic Claude API via the official `anthropic` Python SDK. **[assumption]** |
+| Provider and SDK | Anthropic Claude API via the official `anthropic` Python SDK ([ADR-014](decision_log.md)). A cross-vendor pairing is a named follow-on, not v0.1 ([ADR-027](decision_log.md)). |
 | Default model | `claude-opus-5`, configurable per run and recorded in `runs.model_id`. |
 | Output shape | Structured outputs (`client.messages.parse` with a Pydantic model for the decision envelope). No tool use, no prefill. |
 | Thinking | Adaptive thinking on; `output_config.effort` recorded per run in place of sampling settings, which current models do not accept. Seed is recorded as unsupported. |
 | Timeout | 45 s request timeout, SDK retries set to 0 so a retry never doubles cost silently; the service applies the single repair explicitly. |
-| Refusal | `stop_reason == "refusal"` is treated like an invalid response: one repair, then `model_failure`. Server-side model fallbacks are disabled so the recorded model ID is the model that decided. **[assumption]** |
+| Refusal | `stop_reason == "refusal"` is treated like an invalid response: one repair, then `model_failure`. Server-side model fallbacks are disabled so the recorded model ID is the model that decided, which spec 11.3 requires for reproducibility ([ADR-015](decision_log.md)). |
 | Budget | Before each call: `count_tokens` on the exact request plus `max_tokens` as the output bound, multiplied by the operator-maintained price table. Refuse the call if the ceiling would be crossed; record `estimated_cost_usd` and `reported_cost_usd` separately; unknown price shows as unknown. |
 | Caching | The system prompt (role rules, protocol rules, output schema) is static per run and marked with a cache breakpoint; the observation follows it. |
-| Prompt template | Versioned files under `services/agent/prompts/`; version hash recorded per decision. |
+| Prompt template | Versioned files under `services/agent/prompts/`, changed through review like any other source; version hash recorded per decision ([ADR-029](decision_log.md)). |
+| Prompt precedence | Order is fixed: role, protocol rules, output schema, then the mandate's `instructions` in a delimited section introduced as the agent's own private guidance. The prompt states that nothing in that section changes the rules above it or the shape of the output. Precedence is not enforced by the model: the policy signer rejects any action outside the legal and in-mandate set, and the strict decision schema turns an attempt to emit a fourth shape into one repair and then `model_failure`. |
 | Isolation | The request contains only the system prompt and the observation JSON. An outbound-context assertion (A12) scans every request body for the opponent's mandate fields, addresses' private keys, and credential patterns before sending. |
 
 ## 8. Cross-cutting concerns
 
 **Configuration.** Pydantic settings from environment. Secrets: relay key, operator key, participant keys or keystore paths, model API key, agent-service shared secret, database URL. `.env.example` in `infra/` lists every variable with a comment.
+
+`SEPOLIA_RPC_URL` points at an Alchemy application created for this project alone, not shared with the operator's other projects, so that rate-limit headroom and usage attribution belong to this project. The indexer polls every 4 s, which at one active run is well inside a free-tier compute-unit budget; the poll interval is configuration, and the runbook records what to change if the provider throttles.
 
 **Idempotency and concurrency.** One run active at a time enforced by a database advisory lock plus a `run_leases` row with expiry. Mutation routes take `Idempotency-Key` and store the response in `operations`. Relay nonces are serialized by the same lease.
 
@@ -392,15 +395,15 @@ The model client lives only in the agent service and is wrapped behind `ModelCli
 
 | Area | Choice | Notes |
 |---|---|---|
-| Python | 3.12, `uv` for env and lockfile, `ruff`, `mypy --strict`, `pytest` | **[assumption]** |
+| Python | 3.12, `uv` for env and lockfile, `ruff`, `mypy --strict`, `pytest` | Recorded in `CLAUDE.md` |
 | Backend | FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, web3.py, eth-account | |
 | Agent | Same Python toolchain, `anthropic` SDK | |
-| Web | Node LTS, `pnpm`, React, TypeScript, Vite, Vitest, Playwright | **[assumption]** |
+| Web | Node LTS, `pnpm`, React, TypeScript, Vite, Vitest, Playwright | Recorded in `CLAUDE.md` |
 | Contracts | Foundry (forge, anvil, cast), Solidity 0.8.x, OpenZeppelin Contracts 5.x | |
 | Database | PostgreSQL 16 | |
 | Local infra | Docker Compose | |
 
-Exact versions are chosen at implementation start, pinned in lockfiles, and recorded in [decision_log.md](decision_log.md).
+Exact versions were chosen at the start of stage 0, are pinned in `uv.lock`, `pnpm-lock.yaml`, `contracts/foundry.toml` and the Compose image tags, and are recorded in [ADR-033](decision_log.md).
 
 ## 11. Architectural risks
 

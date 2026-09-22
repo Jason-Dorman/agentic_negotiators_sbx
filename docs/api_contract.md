@@ -24,7 +24,7 @@ Two APIs are defined: the **operator API** served by the backend to the browser 
 | Enums | Lowercase snake_case strings. Integer codes appear only where the protocol defines them (`reason_code`). |
 | Idempotency | Every `POST` accepts `Idempotency-Key` (UUID). A repeated key with the same body returns the stored response with `Idempotent-Replayed: true`. Same key with a different body returns `409 idempotency_conflict`. Keys are scoped per route and retained 24 h. |
 | Operations | Any route that may take more than one second returns `202` with an operation record and `Location: /v1/operations/{operation_id}`. |
-| Authentication | None on localhost by default. When `OPERATOR_TOKEN` is configured, every route except `/health` requires `Authorization: Bearer <token>`. Remote exposure additionally requires TLS termination in front of the backend. **[assumption]** |
+| Authentication | None on localhost by default. When `OPERATOR_TOKEN` is configured, every route except `/health` requires `Authorization: Bearer <token>`. Remote exposure additionally requires TLS termination in front of the backend, and exposing the API on a network the operator does not control requires the STRIDE review in [security_and_trust_boundaries.md](security_and_trust_boundaries.md) section 8.1 first ([ADR-028](decision_log.md)). |
 | Privacy headers | Routes that reveal private inputs require `X-Observer-Reveal: true`. Without it they return `403 reveal_required`. The header is a deliberate friction, not a security boundary. |
 | Pagination | List routes take `limit` (default 50, max 200) and `cursor`; responses carry `next_cursor` or `null`. |
 | Versioning | Breaking changes bump the URL prefix. Additive fields are non-breaking. Clients must ignore unknown fields. |
@@ -77,6 +77,10 @@ HTTP status follows the code table in section 7.
 
 Lists deployment manifests known to the backend.
 
+`explorer_base_url` is `https://sepolia.etherscan.io` for chain 11155111 and `null` for the local chain, which has no explorer. Every transaction the backend records on a chain with an explorer base URL exposes a resolvable `explorer_url`, so an observer can open any recorded action on Etherscan without leaving the evidence trail.
+
+`ens` is display metadata and `null` where no names were registered. The names were resolved once, when the deploy script wrote the manifest, and the backend serves them verbatim from that row. **No route resolves ENS, and no client may treat a name as identifying a contract.** The address fields are authoritative; a client that renders a name renders the address with it ([ADR-030](decision_log.md), PRD FR-U10).
+
 ```json
 {
   "deployments": [
@@ -92,6 +96,7 @@ Lists deployment manifests known to the backend.
       "code_hashes": { "exchange": "0x…", "base_token": "0x…", "quote_token": "0x…" },
       "compiler": { "solc": "0.8.x", "optimizer": true, "runs": 200, "evm_version": "…" },
       "explorer_base_url": "https://sepolia.etherscan.io" | null,
+      "ens": { "root": "agentnegotiation.eth", "exchange": "exchange.agentnegotiation.eth", "base_token": "masset.agentnegotiation.eth", "quote_token": "musd.agentnegotiation.eth", "resolved_at": "…" } | null,
       "deployed_at": "…"
     }
   ]

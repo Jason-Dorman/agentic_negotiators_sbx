@@ -1,0 +1,99 @@
+# Import boundaries, verbatim from docs/contributing.md section 1.1.
+#
+# This file is written in stage 0 so the boundary is recorded before the first module exists
+# and is not reverse-engineered from whatever the code turns out to do. It is wired into CI in
+# stage 2, when the modules it names are created; running it before then reports missing
+# modules, which is correct and not a failure to suppress.
+#
+#   uv run lint-imports
+
+[importlinter]
+root_packages =
+    api
+    agent
+    negotiation_protocol
+include_external_packages = True
+
+[importlinter:contract:api-layers]
+name = Backend modules form a layered dependency graph
+type = layers
+layers =
+    api.routes
+    api.controller
+    api.turns
+    api.validation
+    api.relay | api.indexer | api.projection | api.observation | api.evidence | api.metrics
+    api.agent_client
+    api.chain
+    api.db
+    api.config
+
+[importlinter:contract:routes-are-a-leaf]
+name = Nothing imports routes
+type = forbidden
+source_modules =
+    api.controller
+    api.turns
+    api.validation
+    api.relay
+    api.indexer
+    api.projection
+    api.observation
+    api.evidence
+    api.metrics
+    api.agent_client
+    api.chain
+    api.db
+    api.config
+forbidden_modules =
+    api.routes
+
+[importlinter:contract:sessions-stay-in-db]
+name = Nothing outside db touches SQLAlchemy sessions directly
+type = forbidden
+source_modules =
+    api.routes
+    api.controller
+    api.turns
+    api.validation
+    api.relay
+    api.indexer
+    api.projection
+    api.observation
+    api.evidence
+    api.metrics
+    api.agent_client
+    api.chain
+forbidden_modules =
+    sqlalchemy
+    asyncpg
+
+[importlinter:contract:chain-is-pure]
+name = The chain adapter depends only on the protocol package
+type = forbidden
+source_modules =
+    api.chain
+forbidden_modules =
+    api.db
+    sqlalchemy
+
+[importlinter:contract:agent-has-no-database-and-no-rpc]
+name = The agent service has no database, no RPC and no knowledge of the backend
+type = forbidden
+source_modules =
+    agent
+forbidden_modules =
+    api
+    sqlalchemy
+    asyncpg
+    alembic
+    web3
+
+[importlinter:contract:protocol-is-standalone]
+name = The protocol package imports nothing from services or apps
+type = forbidden
+source_modules =
+    negotiation_protocol
+forbidden_modules =
+    api
+    agent

@@ -1,0 +1,14 @@
+# Repository-root entry point so the documented command works from the repository root:
+#
+#     docker compose --profile local up
+#
+# The service definitions live in infra/ (docs/contributing.md section 1). The Sepolia profile
+# is added in stage 5 of docs/build_plan.md as infra/compose.sepolia.yaml.
+#
+# The project name namespaces every container, network and volume Compose creates here, so this
+# stack cannot attach to another project's PostgreSQL by accident. Do not change it casually:
+# changing it orphans the existing volume rather than renaming it.
+name: agent_negotiation
+
+include:
+  - infra/compose.local.yaml

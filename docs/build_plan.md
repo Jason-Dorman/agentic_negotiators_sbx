@@ -3,11 +3,13 @@
 | | |
 |---|---|
 | **Version** | 0.1.0 |
-| **Date** | 19 September 2026 |
+| **Date** | 22 September 2026 |
 | **Source** | Spec section 13 |
 | **Related** | [prd.md](prd.md), [test_strategy.md](test_strategy.md), [architecture.md](architecture.md), [contributing.md](contributing.md) |
 
 Stages follow the spec's build sequence with an added stage 0 for repository scaffolding. Each stage has an exit condition that is a demonstrable artifact, not a task list being finished. Stages are sequential because each depends on the previous one's contracts being stable.
+
+**Status convention.** A stage carries a `Status` line from the moment work on it starts, and each deliverable is marked `done`, `in progress` or left unmarked for not started. A stage with no `Status` line has not been started. The marks move in the same change set as the code, so a deliverable marked done is one whose gate is green, not one whose file exists.
 
 ```mermaid
 flowchart LR
@@ -24,25 +26,55 @@ flowchart LR
 
 ## Stage 0: Scaffold
 
+**Status: complete, 22 September 2026.**
+
 **Deliverables**
-- Git repository initialized; directory layout per spec 10.2; `.gitignore`, `.editorconfig`, `.env.example`.
-- Toolchains pinned: `uv` workspace for `services/api`, `services/agent`, `packages/protocol` (Python); `pnpm` workspace for `apps/web` and the TypeScript side of `packages/protocol`; Foundry for `contracts/`.
-- Docker Compose local profile with PostgreSQL and Anvil; health checks.
-- CI pipeline skeleton with the gates in [test_strategy.md](test_strategy.md) section 10, initially running lint and an empty test suite.
-- Pre-commit hooks: format, lint, secret scan.
+- Git repository initialized (done, 21 September 2026); directory layout per spec 10.2 with a `src/` layout inside the three Python packages ([ADR-034](decision_log.md)); `.gitignore`, `.gitattributes`, `.editorconfig`, `infra/.env.example`.
+- `LICENSE` (Apache-2.0) and `NOTICE` at the repository root (done, 21 September 2026); `SPDX-License-Identifier: Apache-2.0` as the first line of every `.sol` file from stage 1, enforced from now by `infra/scripts/check_spdx.py` in the pre-commit hook and the CI secret-scan job ([ADR-032](decision_log.md)).
+- `infra/secrets/` git-ignored. Keystore handling is split, and only the first half is stage 0 work:
+  - **Generation — complete.** `infra/scripts/generate_keys.py` produces `env:` refs for the local profile and encrypted web3 keystores for Sepolia ([ADR-023](decision_log.md)).
+  - **Runtime loading through `KeyHolder` — intentionally deferred to stage 2**, under the same ADR, which already places the first exercise of the `keystore:` path in the stage 2 tests. `KeyHolder` lives in `services/agent/src/agent/keys/` and is built with the agent service it serves, not ahead of it. When it lands it holds the existing boundary: a signing key stays server-side inside the agent process and never reaches a model prompt, the browser bundle, an evidence export, an ordinary log line, or the other agent instance. Stage 0 has not delivered "generation and loading"; it has delivered generation.
+- Toolchains pinned ([ADR-033](decision_log.md)): `uv` workspace for `services/api`, `services/agent`, `packages/protocol` (Python 3.12, one `uv.lock`); `pnpm` workspace for `apps/web` and the TypeScript side of `packages/protocol`; Foundry v1.8.3 for `contracts/`, Solidity 0.8.28.
+- Docker Compose local profile with PostgreSQL 16.15 and Anvil on chain 31337; health checks on both; a second database for the integration suite. The stack is namespaced away from the operator's other projects: Compose project `agent_negotiation`, volume `agent_negotiation_postgres_data`, database and role `agent_negotiation`, and a published host port defaulting to 55432 rather than 5432. The container port stays 5432 and services inside the network use `postgres:5432`, so `POSTGRES_PORT` is a host-side default that no application code reads.
+- CI pipeline skeleton (`.github/workflows/ci.yml`) with one job per gate in [test_strategy.md](test_strategy.md) section 10. Gates with nothing to check yet carry `if: false` and report as skipped, never as passed, each naming the stage that turns it on.
+- Pre-commit hooks: format, lint, type check, secret scan, SPDX header.
+- The import contract from [contributing.md](contributing.md) section 1.1 written out in `.importlinter`, active from stage 2.
+- `docs/runbook.md` started, at the product owner's direction, with local startup, database isolation and the ports, and key generation. Q12 had placed it at stage 2; it still grows in every stage and is completed in stage 5.
 - `CLAUDE.md` and `docs/README.md` index.
 
-**Exit condition:** `docker compose --profile local up` starts PostgreSQL and Anvil; CI passes on an empty commit; a developer can run each toolchain's test command and get zero tests, zero failures.
+**Exit condition (met):** `docker compose --profile local up` starts PostgreSQL and Anvil, both reporting healthy; all stage 0 verification and repository gates pass with zero failures; each toolchain's test command runs green.
+
+The earlier wording asked for "zero tests, zero failures", which read as though an empty suite were the goal. It was not: what stage 0 owed was a working gate in each toolchain, and a gate is only working if something has shown it failing. The bootstrap suite is **15 Python tests** over `secret_scan.py` and `check_spdx.py`, the two scripts stage 0 turns into merge gates. Writing them paid for itself before the first commit — they are what caught the scanner flagging its own fixtures and the mypy hook being invoked with no target. The TypeScript and Foundry suites are genuinely empty and pass, which is the correct state for them until stages 1 and 4.
 
 ## Stage 1: Protocol and contracts
 
+**Status: in progress, started 22 September 2026.** The contract and its unit suite are complete, reviewed and at 100 percent coverage. The invariant suite, the deployment script, the protocol package and the reconstruction tool have not been started. Work to date is on `feat/stage0-scaffold` and is **not yet committed**. One question is open for the product owner: [Q17](open_questions.md), whether the constructor should reject `baseToken == quoteToken`.
+
 **Deliverables**
-- `packages/protocol/`: JSON schemas (observation, agent decision, mandate, scenario, export), reason-code tables, EIP-712 fixtures with known digests and signatures.
-- `contracts/`: `MockERC20`, `NegotiationExchange`, deployment script writing the manifest, unit tests, fuzz and invariant tests, gas snapshot.
-- Reconstruction tool (`packages/protocol/tools/reconstruct.py`) reading only chain data.
+
+Contracts:
+- **done** — `contracts/src/interfaces/INegotiationExchange.sol`: structs, the seven events and the twenty-two custom errors of [protocol.md](protocol.md) sections 3, 7, 8.3 and 9.
+- **done** — `contracts/src/MockERC20.sol`: 6 decimals, operator-only minting.
+- **done** — `contracts/src/NegotiationExchange.sol`: the full state machine and verification order of [protocol.md](protocol.md) section 8.
+- **done** — Unit tests, 94 across ten files, covering A05 to A11. Dependencies pinned as submodules and recorded in a committed `contracts/foundry.lock`: forge-std v1.16.2, OpenZeppelin v5.7.0 ([ADR-033](decision_log.md)).
+- **done** — Coverage on `NegotiationExchange`: 100 percent of lines, statements, branches and functions, meeting the gate in [test_strategy.md](test_strategy.md) section 10.
+- **done** — Adversarial review of the contracts and tests, 22 September 2026. It found no defect in the contract and four in the suite, all since closed. The serious one: deleting the signature check from `acceptAndSettle`, the only function that moves tokens, left all 80 tests green, because every A07 and A08 case targeted `recordOffer` alone. Each fix is now confirmed by mutation — removing either signature check, swapping the settlement legs, or leaving `activeSequence` uncleared each fails the suite. The lesson is recorded in [contributing.md](contributing.md) section 3: a passing suite is evidence only against the mutations it has been shown.
+- Fuzz and invariant tests under `contracts/test/invariant/` per [test_strategy.md](test_strategy.md) section 4.2.
+- Deployment script writing the manifest, and a committed `forge snapshot`.
+
+Protocol package:
+- `packages/protocol/schemas/`: observation, agent decision, mandate, scenario and export JSON schemas.
+- Reason-code tables.
+- EIP-712 fixtures with known digests and signatures.
 - Python and TypeScript fixture tests confirming digests match Foundry.
+- Reconstruction tool (`packages/protocol/tools/reconstruct.py`) reading only chain data.
+
+CI:
+- Enable the `test-contracts`, `lint-contracts` and `gas-snapshot` jobs in `.github/workflows/ci.yml`, which stage 0 left declared and skipped.
 
 **Exit condition:** Acceptance A05 through A11 pass in Foundry; fixture tests pass in all three languages; a deployment to Anvil produces a manifest that the reconstruction tool can read.
+
+**Three things learned here that the next session needs.** `vm.expectRevert` must immediately precede the call under test: an external call in the argument list, including the `signOffer` and `hashOffer` helpers, consumes the expectation and the test fails as "next call did not revert". `vm.prank` is consumed the same way, so a `balanceOf` inside a pranked call's arguments silently redirects the call to the test contract. Three Foundry lints are suppressed in `contracts/foundry.toml`, each with its reason written there: `block-timestamp`, because [protocol.md](protocol.md) section 6 makes chain time authoritative; `arbitrary-send-erc20`, because the `from` address is the participant by design; and `reentrancy-events`, which is contract-scoped and fires on two functions that make no external call at all.
 
 ## Stage 2: Deterministic end-to-end run
 
@@ -51,7 +83,7 @@ flowchart LR
 - Agent service: internal API, `DeterministicPolicy`, `MandateValidator`, signer, key holder, HMAC auth.
 - Compose profile runs api, agent-a, agent-b.
 - Integration test harness with Anvil and PostgreSQL.
-- Runbook started: local startup, recovering pending transactions.
+- `docs/runbook.md` continues (started in stage 0): recovering pending transactions, and the `KeyHolder` loading procedure deferred from stage 0 under [ADR-023](decision_log.md). It grows in every subsequent stage and is completed in stage 5.
 
 **Exit condition:** A02 (deterministic settlement) and A03 (infeasible no-deal) complete end to end via the API with evidence rows in every table; A06, A13, A14 integration tests pass; the export route produces a document that validates against the schema and the reconstruction tool agrees with it (A15).
 
@@ -79,9 +111,11 @@ flowchart LR
 
 **Deliverables**
 - Sepolia deployment with manifest committed under `docs/deployments/`.
-- Compose Sepolia profile; keystore handling; funding script for fresh test wallets.
+- Compose Sepolia profile; funding script for fresh test wallets. Keystore handling already exists from stage 0; this stage only supplies the Sepolia keystores and password.
+- `SEPOLIA_RPC_URL` from an Alchemy application created for this project alone, so rate limits and usage are attributable to it; indexer poll interval 4 s, with the throttling response recorded in the runbook.
 - Runbook completed: funding a testnet demonstration, recovery, replay, export.
 - Confirmation threshold 2 and finalized-head tracking verified against a real RPC.
+- Sepolia ENS names registered and pinned into the deployment manifest, display-only ([ADR-030](decision_log.md)). If registration is not ready, the deployment ships without names and they are added afterwards; stage 5 does not wait on them.
 
 **Exit condition:** A17 passes; selected live scenarios (one settlement, one no-deal, one operator abort) execute on Sepolia, replay in the UI, and their exports are saved. Explorer links resolve to the manifest addresses.
 

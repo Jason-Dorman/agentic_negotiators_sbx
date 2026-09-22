@@ -68,6 +68,8 @@ In v0.1 the same person typically plays all three roles. Nothing in the design a
 
 Real money, production wallets, external asset prices, bridging, lending, guarantees, insurance, provider procurement, real GPU rental, arbitrary tool execution by agents, multi-party matching, partial fills, quantity negotiation, autonomous strategy training, a general-purpose agent marketplace, free-form chat between agents, and the compute-negotiation experiment in spec Appendix A.
 
+Deferred but explicitly wanted: **cross-vendor pairings**, negotiating one vendor's model against another's. v0.1 runs Claude against Claude. The interface admits a second provider as an adapter, but the comparison needs its own pairing matrix and an honest treatment of the prompt as a confound, so it is a follow-on experiment rather than a configuration flag ([ADR-027](decision_log.md)).
+
 ### 4.3 Explicit non-goals
 
 - The sandbox is not a permissionless exchange. Operator power to create and abort sessions is centralized and disclosed.
@@ -93,12 +95,14 @@ All values are manufactured experiment inputs. Scenario files live in `scenarios
 | Offer lifetime | up to 600 s, capped by session expiry |
 | Model request timeout | 45 s |
 | Model repair attempts | 1 after an invalid response |
-| Testnet confirmation threshold | 2 |
+| Testnet confirmation threshold | 2 (per-run configurable; recorded in the export) |
 | Local confirmation threshold | 1 |
 | Per-run model-call ceiling | 20 |
 | Per-run model-spend ceiling | USD 2.00 |
 | Buyer allowance to exchange | 250 mUSD |
 | Seller allowance to exchange | 25 mASSET |
+
+At two confirmations, Sepolia's roughly 12 s blocks add roughly 24 s of waiting to each on-chain action, so a five-action negotiation spends about 2 minutes confirming inside an 1,800 s session. The threshold stays at 2 because FR-E3 requires Confirmed to be visibly distinct from Included; lowering it for a particular demonstration is a per-run setting visible in that run's evidence, not a code change.
 
 The feasible interval is 90 to 100 mUSD. Only the offline evaluator may compute it. An **infeasible clone** with seller minimum 105 mUSD demonstrates a correct no-deal outcome.
 
@@ -136,7 +140,7 @@ Requirement IDs are stable and referenced from [test_strategy.md](test_strategy.
 | FR-A1 | An agent may only: propose a payment, counter the current offer, accept the current unexpired opposing offer, or close. | 5.1 |
 | FR-A2 | An agent's observation must contain only: its own mandate and balances, the public session configuration, confirmed structured offers and closures, remaining offer opportunities, current chain time, and its own previous decisions. | 5.2 |
 | FR-A3 | An agent must never receive the opponent's mandate, private validation errors, model explanations, prompts, decision seed, or credentials, and must have no filesystem, browser, SQL, shell, HTTP, or contract-call tools. | 5.2 |
-| FR-A4 | The model must return exactly one of three decision shapes (`offer`, `accept`, `walk_away`) with amounts as base-10 integer strings in minor units. Extra fields are rejected. An optional operator-facing explanation is carried in a separate envelope field, never inside the decision and never shown to the counterparty. **[assumption]** | 5.4, 3.2 |
+| FR-A4 | The model must return exactly one of three decision shapes (`offer`, `accept`, `walk_away`) with amounts as base-10 integer strings in minor units. Extra fields are rejected. An optional operator-facing explanation is carried in a separate envelope field, never inside the decision and never shown to the counterparty. | 5.4, 3.2 |
 | FR-A5 | The policy signer must validate role, session configuration, chain, contract, sequence, action legality, positive integer quantities, expiry, private reservation limits, available balances, and minimum remaining inventory before signing any action, including offers. | 5.3 |
 | FR-A6 | The signer must construct the typed message itself from validated state and never sign a model-supplied payload or destination. | 5.3, 5.4 |
 | FR-A7 | A mandate-violating model response must be rejected with private feedback and allowed exactly one repair. After that the run is classified as a model failure and the session aborted with reason `model_failure`. It must never be counted as a walk-away. | 5.3, 9.4 |
@@ -187,6 +191,7 @@ See [protocol.md](protocol.md) for the normative definition.
 | FR-U7 | The UI must label all balances as test assets, all economics as simulated, whether decisions are live or replayed, whether a run used a deterministic fixture, and that the operator holds centralized abort power. | 3.1, 8, 12 |
 | FR-U8 | Invalid raw model responses must be labelled as private operational records that were never authorized offers. | 7.6 |
 | FR-U9 | The browser never signs trades and never holds private keys or model credentials. | 4.3, 8 |
+| FR-U10 | Where the deployment manifest records ENS names, the UI may show the name beside an address, labelled as a display name. The manifest address stays visible, and no identity check anywhere in the system may rely on a name. | ADR-030 |
 
 ### 6.7 Evaluation (FR-V)
 

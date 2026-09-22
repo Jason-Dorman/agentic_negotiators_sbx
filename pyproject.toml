@@ -1,0 +1,116 @@
+# uv workspace root. This file is not a distributable package; it exists to pin the
+# Python toolchain and to hold the settings that every member shares.
+# Members and layout: docs/contributing.md section 1.
+
+[tool.uv.workspace]
+members = ["services/api", "services/agent", "packages/protocol"]
+
+[tool.uv]
+# Every member resolves against one lockfile so the three Python trees cannot drift.
+default-groups = ["dev"]
+
+[tool.uv.sources]
+negotiation-protocol = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "pytest-cov>=6.0",
+    "ruff>=0.14",
+    "mypy>=1.18",
+    "import-linter>=2.3",
+    "pre-commit>=4.3",
+]
+# Repository scripts (key generation, secret scan) that are not part of any service.
+tooling = [
+    "eth-account>=0.13",
+]
+
+# --------------------------------------------------------------------------------------
+# Formatting and linting: docs/contributing.md section 2.1
+# --------------------------------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["services/api/src", "services/agent/src", "packages/protocol/src"]
+extend-exclude = ["contracts/lib"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # pep8-naming
+    "UP",          # pyupgrade
+    "B",           # bugbear
+    "C901",        # cyclomatic complexity
+    "A",           # builtin shadowing
+    "ASYNC",       # async correctness
+    "S",           # bandit
+    "DTZ",         # naive datetimes
+    "T20",         # print
+    "SIM",         # simplify
+    "PTH",         # pathlib
+    "RUF",
+]
+ignore = [
+    "S101",        # assert: pytest relies on it; production use is caught in review
+]
+
+[tool.ruff.lint.mccabe]
+# docs/contributing.md 2.1: under 10, aim for 5. Exceptions carry `# noqa: C901  reason: ...`.
+max-complexity = 9
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S", "T20"]
+"infra/scripts/*" = ["T20"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# --------------------------------------------------------------------------------------
+# Typing: mypy --strict is the gate. docs/test_strategy.md section 10.
+# --------------------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+disallow_any_unimported = true
+# A `type: ignore` must name its reason (docs/contributing.md 2.1); this keeps stale ones visible.
+warn_unused_ignores = true
+show_error_codes = true
+mypy_path = ["services/api/src", "services/agent/src", "packages/protocol/src", "infra/scripts"]
+exclude = ["contracts/lib/", "apps/web/"]
+
+# --------------------------------------------------------------------------------------
+# Tests: docs/test_strategy.md section 2 defines the layers and their locations.
+# --------------------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = [
+    "packages/protocol/tests",
+    "services/api/tests",
+    "services/agent/tests",
+    "infra/scripts/tests",
+]
+addopts = "-ra --strict-markers --strict-config"
+pythonpath = ["infra/scripts"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: requires PostgreSQL and Anvil (docs/test_strategy.md section 2)",
+    "isolation: agent information-boundary suite (A12)",
+    "live_model: calls the real model provider; never a CI gate",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["services/api/src", "services/agent/src", "packages/protocol/src"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]

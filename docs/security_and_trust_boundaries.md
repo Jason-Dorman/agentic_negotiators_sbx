@@ -116,6 +116,7 @@ The policy signer validates the **complete trade** before signing an offer, beca
 | Key exfiltration via logs or export | Key in env dumped by a debug log | Redaction filter; keys loaded into a `KeyHolder` that exposes only `sign()`; `key_ref` stored, not key | Log scanner test |
 | Model spend runaway | Loop bug | Per-run call ceiling and spend ceiling checked before each call; SDK retries disabled | Unit tests on `BudgetGuard` |
 | Unlimited allowance | Setup approves max uint | Finite allowances equal to initial inventory; approve only the exchange | Setup test |
+| Mutable name mistaken for identity | An ENS name in the manifest is re-pointed by whoever controls the registration, or a viewer trusts a name over an address | Names are resolved once at deploy time and stored; nothing resolves ENS at run time; every identity check compares the manifest address against the chain; the UI shows the address alongside the name | A17 name-to-address check, manifest snapshot test |
 
 ## 6. Out of scope for v0.1 (disclosed, not mitigated)
 
@@ -132,12 +133,18 @@ The policy signer validates the **complete trade** before signing an offer, beca
 | Secret | Where it lives | How it is loaded | Rotation |
 |---|---|---|---|
 | Participant keys (local) | `.env` (git-ignored), generated per run by a script | `env:` key ref into `KeyHolder` | New wallets every run |
-| Participant keys (Sepolia) | Encrypted web3 keystore JSON in `infra/secrets/` (git-ignored), password in env **[assumption]** | `keystore:` key ref | New wallets every run |
+| Participant keys (Sepolia) | Encrypted web3 keystore JSON in `infra/secrets/` (git-ignored), password in env ([ADR-023](decision_log.md)) | `keystore:` key ref | New wallets every run |
 | Operator key | `.env` or keystore | Backend only | Per deployment |
 | Relay key | `.env` or keystore | Backend only | Per deployment; fund with test ETH only |
 | Model API key | `.env` for each agent instance, separately | `anthropic` SDK from env | Operator-managed |
 | Agent shared secrets | `.env`, one per instance | HMAC verification | Per deployment |
 | Database URL | `.env` | Backend only | |
+
+Keystores are in place from the start rather than retrofitted for the Sepolia stage, so the `keystore:` path through the key holder is exercised by tests from stage 2 and the Sepolia deployment introduces no new code path. The local profile keeps `env:` refs so a developer needs no password to run the suite. Neither is production custody, and the runbook says so.
+
+The two halves land in different stages, and saying which is which avoids a false sense of coverage. **Generation** exists from stage 0: `infra/scripts/generate_keys.py` writes `env:` refs for the local profile and encrypted keystores into `infra/secrets/` for Sepolia. **Runtime loading** is the `KeyHolder` in `services/agent/src/agent/keys/` and arrives with the agent service in stage 2 ([ADR-023](decision_log.md)). Whatever the reference form, the boundary is the same and does not change in any later stage: a signing key stays inside the agent service process, the key holder exposes signing rather than key material, and no key reaches a model prompt, the browser bundle, an evidence export, an ordinary log line, the database, or the other agent instance.
+
+Mandates are stored in plaintext. Their confidentiality rests on process isolation, repository access control, and the classification table, on a host the operator fully trusts — not on encryption at rest ([ADR-031](decision_log.md)). This is stated plainly rather than softened, because a reader who assumes the database is encrypted would draw the wrong conclusion from an exported dump.
 
 Rules: `.env.example` documents every variable with placeholder values only. A pre-commit hook and CI grep reject hex private keys, `sk-ant-` prefixes, and keystore JSON. The logger's redaction filter runs on every record. No secret is ever an argument in a URL.
 
@@ -150,6 +157,23 @@ Development binds to localhost. Before exposing the UI or backend beyond the hos
 3. Keep agent services on the internal network only.
 4. Confirm the observer reveal routes are logged and that the audience view is a separate browser session without the token if the presenter wants a clean public view.
 5. Confirm test-ETH balances are small; the relay key should hold only what the demo needs.
+
+### 8.1 Before exposing to a network the operator does not control
+
+The checklist above is the minimum for showing the UI to a colleague across a trusted LAN. It is not sufficient for a public or untrusted network, and `OPERATOR_TOKEN` is a single shared credential with no rotation, no per-user identity, and no revocation short of a restart with a new value.
+
+Exposing the backend or the UI publicly is a separate decision that requires a STRIDE-structured pass over section 5 first, recorded as its own ADR ([ADR-028](decision_log.md)). The v0.1 threat table above is organized by attack rather than by category, which is right for an experiment whose main risk is information leakage between two agents, and wrong for a service reachable by strangers. The pass asks, for each element in the section 2 boundary diagram:
+
+| STRIDE category | The question this deployment has not yet answered |
+|---|---|
+| Spoofing | Who may present `OPERATOR_TOKEN`, and how is a leaked token detected and revoked without a restart? |
+| Tampering | What stops a caller mutating run configuration or mandates between validation and start, given idempotency keys are the only request-integrity control? |
+| Repudiation | Access logs record observer reveals; are they durable, off-host, and attributable to a person rather than to a shared token? |
+| Information disclosure | The reveal header is friction, not a control. With multiple viewers, what actually separates the audience view from the operator view? |
+| Denial of service | Denial of service is explicitly out of scope in section 6. A public endpoint makes model spend and relay gas attacker-triggerable, so the budget guard becomes a security control rather than a cost control. |
+| Elevation of privilege | The operator key can create and abort sessions. Does anything reachable from the network reach that key, and is the relay key separated from it in practice as well as in the table in section 4? |
+
+Until those are answered in writing, the deployment stays bound to localhost.
 
 ## 9. Disclosure statements
 

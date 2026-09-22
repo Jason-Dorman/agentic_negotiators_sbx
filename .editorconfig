@@ -1,0 +1,23 @@
+# See docs/contributing.md section 2 for the language standards these settings serve.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{ts,tsx,js,jsx,json,jsonc,yml,yaml,css,html}]
+indent_size = 2
+
+[*.sol]
+indent_size = 4
+
+[*.md]
+# Trailing whitespace is significant for Markdown line breaks.
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
