@@ -108,6 +108,8 @@ From [test_strategy.md](test_strategy.md):
 - Any test that uses a canned model response labels the run `fixture`.
 - No application code may contain the default reservation values in a comparison. A grep test enforces this.
 - Coverage thresholds in the test strategy are CI gates.
+- **A green suite is evidence only against the mutations it has been shown.** Before marking a test deliverable done, break the thing the test claims to protect and confirm the suite goes red. This is not ceremony: the stage 1 review found that deleting the signature check from `acceptAndSettle` — the only function that moves tokens — left all 80 tests passing, because every signature test targeted a different entry point. Coverage was 99 percent at the time. Line coverage says a line ran, not that anything would notice if it changed.
+- Two Foundry cheatcode traps that produce tests which pass for the wrong reason. `vm.expectRevert` must immediately precede the call under test: an external call in the argument list, including any helper that reads from the contract, consumes the expectation. `vm.prank` is consumed the same way, so a `balanceOf` inside a pranked call's arguments redirects the real call to the test contract. Both have already caused silent failures in this repository.
 
 ## 4. Change workflow
 

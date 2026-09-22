@@ -17,6 +17,30 @@ bytecode_hash = "ipfs"
 fs_permissions = [{ access = "read-write", path = "./out" }]
 gas_reports = ["NegotiationExchange", "MockERC20"]
 
+[lint]
+# `block-timestamp` fires on every time comparison in NegotiationExchange, and every one of
+# them is deliberate. docs/protocol.md section 6 makes chain time authoritative for expiry and
+# offer lifetime precisely so that no component substitutes its own clock; the validator's
+# few-seconds latitude over `block.timestamp` is immaterial against an offer lifetime measured
+# in minutes and a session measured in half an hour. Suppressed here, once, with the reason,
+# rather than with scattered inline pragmas that stop being read.
+#
+# `arbitrary-send-erc20` fires on the two `safeTransferFrom` calls in `acceptAndSettle`, where
+# `from` is the buyer and the seller rather than `msg.sender`. That is the protocol, not a
+# mistake: the participants grant allowances during setup, and the exchange moves their tokens
+# only on presentation of a linked offer signature and acceptance signature over the same
+# digest, on a session the operator created (docs/protocol.md sections 1 and 8.2). A reviewer
+# who adds a third `transferFrom` site must revisit this line rather than inherit it.
+#
+# `reentrancy-events` fires on every event in the contract, including `OfferRecorded` and
+# `SessionClosed`, whose functions make no external call at all — the check is contract-scoped.
+# The two real instances are in `acceptAndSettle`, where docs/protocol.md section 9 requires
+# the acceptance and settlement events to be emitted after both transfers, and section 8.1
+# step 10 puts emission last. The function is `nonReentrant`, the token pair is fixed at
+# construction, and both tokens are plain OpenZeppelin ERC-20s with no transfer callbacks
+# (docs/protocol.md section 2).
+exclude_lints = ["block-timestamp", "arbitrary-send-erc20", "reentrancy-events"]
+
 [profile.ci]
 verbosity = 3
 fuzz = { runs = 1024 }

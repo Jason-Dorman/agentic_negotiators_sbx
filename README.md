@@ -70,7 +70,9 @@ stages 1 to 3. What works today is the toolchain, the local chain and the databa
 what stage 0 set out to deliver.
 
 Prerequisites: [uv](https://docs.astral.sh/uv/), Node 22 with Corepack, [Foundry](https://getfoundry.sh),
-Docker with Compose. Exact versions are in [ADR-033](docs/decision_log.md).
+Docker with Compose. Exact versions are in [ADR-033](docs/decision_log.md). `make` and the
+pre-commit hooks find these themselves wherever they are installed; for your own shell, see
+[docs/runbook.md](docs/runbook.md) section 1.
 
 ```sh
 make setup                  # uv sync, pnpm install, pre-commit install

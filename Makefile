@@ -4,6 +4,12 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+# The toolchain installs to per-user directories that a non-login shell does not pick up.
+# Prepending them here means `make` behaves the same from a terminal, an IDE task runner or
+# CI. Anything already on PATH still wins. The same resolution, for the pre-commit hooks,
+# lives in infra/scripts/toolchain.sh.
+export PATH := $(HOME)/.local/bin:$(HOME)/.foundry/bin:$(PATH)
+
 .PHONY: help setup lint format test ci up down logs reset-db hooks
 
 help: ## Show this help

@@ -6,7 +6,19 @@ Every question raised while producing the governance set has now been answered. 
 
 ## Open
 
-None. Add new questions here as they arise, with a provisional answer and the documents the answer touches, rather than deciding silently in code.
+### Q17: should the exchange constructor reject `baseToken == quoteToken`?
+
+**Raised** 22 September 2026, by the adversarial review of the stage 1 contracts. Three of the four review lenses flagged it independently.
+
+**What is true.** `NegotiationExchange`'s constructor checks only that the three addresses are non-zero. Nothing stops a deployment that passes the same token as both legs. Such a session would settle by transferring an amount from buyer to seller and then a different amount from seller to buyer in the same token — a net payment at a price neither party signed, recorded by the events as a normal settlement.
+
+**Why it was not simply fixed.** [protocol.md](protocol.md) section 2 describes two mock tokens as the deployment's topology; it states no constructor precondition, and section 8.3 defines no error for this. Adding a guard means adding an error name to the protocol's error table, which is a protocol change and needs an ADR. The verifiers were right that the code as written diverges from nothing.
+
+**Provisional answer (not implemented).** Add the guard. The cost is one comparison and one error name; the failure it prevents is silent and looks like a successful run in the evidence, which is the failure mode this project is least willing to accept ([architecture.md](architecture.md) goal 4). The counter-argument is real: the deployment script controls both addresses, the setup validator compares them against the manifest, and an operator who wires the same token twice has made a mistake that A17 would catch at deployment time rather than mid-run.
+
+**Touches** if adopted: [protocol.md](protocol.md) sections 2 and 8.3, `INegotiationExchange`, the constructor, one test, and a new ADR.
+
+Add new questions here as they arise, with a provisional answer and the documents the answer touches, rather than deciding silently in code.
 
 ---
 

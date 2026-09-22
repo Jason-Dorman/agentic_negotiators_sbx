@@ -36,6 +36,23 @@ make down       # stop, keeping the database
 `make up` is `docker compose --profile local up -d --wait`, so it returns only once both
 services report healthy. If it returns an error about a port, read section 2.
 
+### If a tool is "not found"
+
+`make` and the pre-commit hooks resolve the toolchain themselves — the Makefile prepends the
+install directories and the hooks go through `infra/scripts/toolchain.sh` — so a commit works
+the same from a terminal, an IDE's git integration or any other launcher with a short `PATH`.
+Neither depends on your shell being configured.
+
+Your own shell is a separate matter. To run `forge`, `cast`, `anvil` or `uv` directly, put the
+install directories on your interactive `PATH`, once:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$HOME/.foundry/bin:$PATH"' >> ~/.bashrc && exec bash
+```
+
+If a hook still reports a tool missing after that, it is genuinely not installed; the hook's
+error names the install command, and `make setup` follows it.
+
 Configuration is optional at this stage: the Compose profile runs on its own defaults. When a
 stage needs configuration, copy the template and edit it.
 

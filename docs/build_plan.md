@@ -9,6 +9,8 @@
 
 Stages follow the spec's build sequence with an added stage 0 for repository scaffolding. Each stage has an exit condition that is a demonstrable artifact, not a task list being finished. Stages are sequential because each depends on the previous one's contracts being stable.
 
+**Status convention.** A stage carries a `Status` line from the moment work on it starts, and each deliverable is marked `done`, `in progress` or left unmarked for not started. A stage with no `Status` line has not been started. The marks move in the same change set as the code, so a deliverable marked done is one whose gate is green, not one whose file exists.
+
 ```mermaid
 flowchart LR
     S0[0 Scaffold] --> S1[1 Protocol and contracts]
@@ -46,13 +48,33 @@ The earlier wording asked for "zero tests, zero failures", which read as though 
 
 ## Stage 1: Protocol and contracts
 
+**Status: in progress, started 22 September 2026.** The contract and its unit suite are complete, reviewed and at 100 percent coverage. The invariant suite, the deployment script, the protocol package and the reconstruction tool have not been started. Work to date is on `feat/stage0-scaffold` and is **not yet committed**. One question is open for the product owner: [Q17](open_questions.md), whether the constructor should reject `baseToken == quoteToken`.
+
 **Deliverables**
-- `packages/protocol/`: JSON schemas (observation, agent decision, mandate, scenario, export), reason-code tables, EIP-712 fixtures with known digests and signatures.
-- `contracts/`: `MockERC20`, `NegotiationExchange`, deployment script writing the manifest, unit tests, fuzz and invariant tests, gas snapshot.
-- Reconstruction tool (`packages/protocol/tools/reconstruct.py`) reading only chain data.
+
+Contracts:
+- **done** — `contracts/src/interfaces/INegotiationExchange.sol`: structs, the seven events and the twenty-two custom errors of [protocol.md](protocol.md) sections 3, 7, 8.3 and 9.
+- **done** — `contracts/src/MockERC20.sol`: 6 decimals, operator-only minting.
+- **done** — `contracts/src/NegotiationExchange.sol`: the full state machine and verification order of [protocol.md](protocol.md) section 8.
+- **done** — Unit tests, 94 across ten files, covering A05 to A11. Dependencies pinned as submodules and recorded in a committed `contracts/foundry.lock`: forge-std v1.16.2, OpenZeppelin v5.7.0 ([ADR-033](decision_log.md)).
+- **done** — Coverage on `NegotiationExchange`: 100 percent of lines, statements, branches and functions, meeting the gate in [test_strategy.md](test_strategy.md) section 10.
+- **done** — Adversarial review of the contracts and tests, 22 September 2026. It found no defect in the contract and four in the suite, all since closed. The serious one: deleting the signature check from `acceptAndSettle`, the only function that moves tokens, left all 80 tests green, because every A07 and A08 case targeted `recordOffer` alone. Each fix is now confirmed by mutation — removing either signature check, swapping the settlement legs, or leaving `activeSequence` uncleared each fails the suite. The lesson is recorded in [contributing.md](contributing.md) section 3: a passing suite is evidence only against the mutations it has been shown.
+- Fuzz and invariant tests under `contracts/test/invariant/` per [test_strategy.md](test_strategy.md) section 4.2.
+- Deployment script writing the manifest, and a committed `forge snapshot`.
+
+Protocol package:
+- `packages/protocol/schemas/`: observation, agent decision, mandate, scenario and export JSON schemas.
+- Reason-code tables.
+- EIP-712 fixtures with known digests and signatures.
 - Python and TypeScript fixture tests confirming digests match Foundry.
+- Reconstruction tool (`packages/protocol/tools/reconstruct.py`) reading only chain data.
+
+CI:
+- Enable the `test-contracts`, `lint-contracts` and `gas-snapshot` jobs in `.github/workflows/ci.yml`, which stage 0 left declared and skipped.
 
 **Exit condition:** Acceptance A05 through A11 pass in Foundry; fixture tests pass in all three languages; a deployment to Anvil produces a manifest that the reconstruction tool can read.
+
+**Three things learned here that the next session needs.** `vm.expectRevert` must immediately precede the call under test: an external call in the argument list, including the `signOffer` and `hashOffer` helpers, consumes the expectation and the test fails as "next call did not revert". `vm.prank` is consumed the same way, so a `balanceOf` inside a pranked call's arguments silently redirects the call to the test contract. Three Foundry lints are suppressed in `contracts/foundry.toml`, each with its reason written there: `block-timestamp`, because [protocol.md](protocol.md) section 6 makes chain time authoritative; `arbitrary-send-erc20`, because the `from` address is the participant by design; and `reentrancy-events`, which is contract-scoped and fires on two functions that make no external call at all.
 
 ## Stage 2: Deterministic end-to-end run
 
