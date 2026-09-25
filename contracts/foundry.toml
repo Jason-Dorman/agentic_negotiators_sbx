@@ -14,7 +14,15 @@ optimizer = true
 optimizer_runs = 200
 via_ir = false
 bytecode_hash = "ipfs"
-fs_permissions = [{ access = "read-write", path = "./out" }]
+# `./out` is read so the deploy script can copy the compiler settings out of the build artefact
+# rather than restating them; `../docs/deployments` is where it writes the manifest; the protocol
+# fixtures are read by test/unit/Fixtures.t.sol, which is the Solidity third of the three-language
+# digest check (docs/test_strategy.md section 5).
+fs_permissions = [
+    { access = "read-write", path = "./out" },
+    { access = "read-write", path = "../docs/deployments" },
+    { access = "read", path = "../packages/protocol/fixtures" },
+]
 gas_reports = ["NegotiationExchange", "MockERC20"]
 
 [lint]
@@ -44,14 +52,18 @@ exclude_lints = ["block-timestamp", "arbitrary-send-erc20", "reentrancy-events"]
 [profile.ci]
 verbosity = 3
 fuzz = { runs = 1024 }
-invariant = { runs = 256, depth = 32, fail_on_revert = false }
+invariant = { runs = 256, depth = 64, fail_on_revert = false }
 
 [profile.default.fuzz]
 runs = 256
 
 [profile.default.invariant]
+# Depth 64 rather than 32: the handler needs createSession, two offers and an acceptance to land
+# in one sequence before invariant 5's *settled* branch is evaluated at all. At depth 32 across
+# nine selectors that combination almost never occurred, so the suite was passing on its
+# unsettled branch and would not have noticed a broken settlement (docs/contributing.md 3).
 runs = 64
-depth = 32
+depth = 64
 fail_on_revert = false
 
 [fmt]

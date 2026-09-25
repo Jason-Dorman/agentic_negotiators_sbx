@@ -39,7 +39,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --all-extras
       - name: Hex private keys, sk-ant- prefixes, keystore JSON
         run: uv run python infra/scripts/secret_scan.py
       - name: SPDX identifier on every Solidity source (ADR-032)
@@ -56,7 +56,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --all-extras
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy .
@@ -90,17 +90,27 @@ jobs:
 
   # ------------------------------------------------------------------------------------
   # Gate: Python unit and integration (Anvil + PostgreSQL)                 blocks merge
-  # The PostgreSQL and Anvil services are added with the integration suite in stage 2.
+  # PostgreSQL is added with the backend integration suite in stage 2. Anvil is needed from
+  # stage 1: the reconstruction tests (A15) start their own on a free port, run the real deploy
+  # script, drive a real negotiation and reconstruct it. They skip with a clear message when
+  # Foundry is absent, which is why the toolchain is installed here rather than left to chance.
   # ------------------------------------------------------------------------------------
   test-python:
     name: Test — Python
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --all-groups
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - run: uv sync --all-groups --all-extras
+      # The protocol fixture tests and the deploy script both read the Foundry build output.
+      - run: forge build --root contracts
       - run: uv run pytest
 
   # ------------------------------------------------------------------------------------
@@ -120,6 +130,36 @@ jobs:
           version: ${{ env.FOUNDRY_VERSION }}
       - run: forge build --root contracts
       - run: forge test --root contracts -vvv
+
+  # The two committed files in packages/protocol that are generated rather than written. A stale
+  # copy is worse than an absent one: the indexer would decode events against an ABI the contract
+  # no longer has, and the cross-language digest check would be comparing against a fixture for a
+  # protocol nobody is running. Both generators are deterministic, so regenerate-and-diff is the
+  # whole check.
+  protocol-artefacts:
+    name: Protocol artefacts are up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - run: uv sync --all-groups --all-extras
+      - run: forge build --root contracts
+      - name: ABI artefacts match the build
+        run: uv run python packages/protocol/tools/export_abi.py --check
+      # A changed fixture means the domain, a type string or the configHash encoding changed, which
+      # is a protocol version bump and a new deployment (docs/protocol.md section 15) — never a
+      # quiet regeneration.
+      - name: EIP-712 fixture matches its generator
+        run: |
+          uv run python packages/protocol/tools/generate_eip712_fixtures.py
+          git diff --exit-code -- packages/protocol/fixtures/eip712.v1.json
 
   test-web:
     name: Test — web and protocol (vitest)
@@ -145,7 +185,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --all-extras
       - run: uv run lint-imports
 
   isolation:
@@ -155,28 +195,69 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-groups
+      - run: uv sync --all-groups --all-extras
       - run: uv run pytest -m isolation
 
-  # 100 percent lines on NegotiationExchange, 100 percent branches on the agent validator and
-  # signer, 85 percent lines on the backend (docs/test_strategy.md section 10, confirmed by the
-  # product owner on 21 September 2026).
+  # docs/test_strategy.md section 10: 100 percent lines on NegotiationExchange, 100 percent
+  # branches on the agent validator and signer, 85 percent lines on the backend (confirmed by the
+  # product owner on 21 September 2026). The contract half is enforced from stage 1, when the
+  # contract exists; the other two are turned on with the code they measure.
+  coverage-contracts:
+    name: Coverage — NegotiationExchange, 100 percent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups --all-extras
+      - name: forge coverage, with the thresholds asserted
+        run: |
+          # Redirected, not piped. `run:` is `bash -e` without `-o pipefail`, so
+          # `forge coverage | tee` would hand the step tee's exit status and a failing `forge`
+          # would reach the threshold check as an empty report.
+          forge coverage --root contracts --no-match-coverage "(test|script)/" \
+            --report summary > coverage.txt
+          cat coverage.txt
+      # The assertion is a script with its own tests, not a heredoc. A gate whose logic cannot be
+      # tested is one that is believed rather than known, and the failure that matters here is a
+      # missing row reading as a pass.
+      - run: uv run python infra/scripts/check_contract_coverage.py coverage.txt
+
   coverage:
-    name: Coverage thresholds (stage 2)
+    name: Coverage thresholds — agent and backend (stage 2)
     if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - run: echo "Wired up with the code it measures."
 
+  # docs/test_strategy.md section 4.3. The snapshot covers the deterministic unit tests only:
+  # fuzz and invariant gas figures move with the seed, so including them would make the gate
+  # report noise as a regression. Tolerance is the 10 percent the test strategy names; a genuine
+  # regression past that is overridable only by a decision-log entry.
   gas-snapshot:
-    name: Gas snapshot regression (stage 1)
-    if: false # Overridable only by a decision-log entry.
+    name: Gas snapshot regression
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
       - uses: foundry-rs/foundry-toolchain@v1
-      - run: forge snapshot --check --root contracts
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      # The snapshot file is named explicitly. `--root` governs where the project is, but the
+      # snapshot path resolves against the working directory, so the bare form read a
+      # non-existent `.gas-snapshot` at the repository root and this gate failed for that reason
+      # rather than for a gas regression.
+      - run: >
+          forge snapshot --check contracts/.gas-snapshot --tolerance 10
+          --no-match-path "test/invariant/*" --root contracts
 
   e2e:
     name: Playwright E2E (stage 4)

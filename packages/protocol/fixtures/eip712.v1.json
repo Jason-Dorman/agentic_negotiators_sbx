@@ -1,0 +1,88 @@
+{
+  "fixture_version": "1",
+  "protocol_version": "1",
+  "generated_by": "packages/protocol/tools/generate_eip712_fixtures.py",
+  "note": "Manufactured test values. The two private keys are worthless constants shared with contracts/test/BaseTest.sol. Every digest here is determined by the domain, the type strings and the configHash encoding: a change to this file is a protocol version bump (docs/protocol.md section 15).",
+  "domain": {
+    "name": "AgentNegotiationSandbox",
+    "version": "1",
+    "chain_id": 31337,
+    "verifying_contract": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
+  },
+  "domain_separator": "0xa1174d3cfc7ae0a224a79f204562604b644d498a513b017a8d55ca682c22b253",
+  "type_strings": {
+    "offer": "Offer(bytes32 sessionId,bytes32 configHash,uint64 sequence,address proposer,uint256 quoteAmount,uint64 validUntil)",
+    "accept": "Accept(bytes32 sessionId,bytes32 configHash,uint64 sequence,address actor,bytes32 offerHash)",
+    "close": "Close(bytes32 sessionId,bytes32 configHash,uint64 sequence,address actor,uint8 reason)"
+  },
+  "type_hashes": {
+    "offer": "0xeeab3cf47eb76a73378226e58911582a3ead11851e45bb311f50d33d97209ebd",
+    "accept": "0x46bdd8dfd6393a89e6f92ae4dbabccc9c342648eadf63a102bc10d3a72b110f4",
+    "close": "0xc9dff92a40f2b001a488131ad64953cc4815f1fae80ecf46b9079e29219e1fdf"
+  },
+  "deployment": {
+    "operator": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "base_token": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "quote_token": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+    "token_decimals": 6
+  },
+  "participants": {
+    "buyer": {
+      "address": "0x0376AAc07Ad725E01357B1725B5ceC61aE10473c",
+      "private_key": "0x0000000000000000000000000000000000000000000000000000000000000b0b"
+    },
+    "seller": {
+      "address": "0xC3A4c5eF1696195f390D03e9fE370E6BAbD28251",
+      "private_key": "0x00000000000000000000000000000000000000000000000000000000005e11e4"
+    }
+  },
+  "chain_time": 1760000000,
+  "session_config": {
+    "session_id": "0xd53527cc83a302ebc2c3208a206e3a2bed6dda7e7774a59a646ded290754cebc",
+    "buyer": "0x0376AAc07Ad725E01357B1725B5ceC61aE10473c",
+    "seller": "0xC3A4c5eF1696195f390D03e9fE370E6BAbD28251",
+    "base_amount": "10000000",
+    "expires_at": 1760001800,
+    "max_offers": 8
+  },
+  "config_hash": "0xeadd607718764001599859f25d772bb552c185759a4926712c87627527e1a73e",
+  "messages": {
+    "offer": {
+      "message": {
+        "session_id": "0xd53527cc83a302ebc2c3208a206e3a2bed6dda7e7774a59a646ded290754cebc",
+        "config_hash": "0xeadd607718764001599859f25d772bb552c185759a4926712c87627527e1a73e",
+        "sequence": 1,
+        "proposer": "0x0376AAc07Ad725E01357B1725B5ceC61aE10473c",
+        "quote_amount": "92000000",
+        "valid_until": 1760000600
+      },
+      "digest": "0xac46f3f03e9a9363253311d8852a196a20598af4772b37570e1a2af5de368633",
+      "signer": "buyer",
+      "signature": "0xc80541db75eeed1e1588ee89ed88edeeddc5c6987e550806b61aa3483b5c6fae2e899546b8bd185c99562584d1429fce9ca606b846dcd5b979700d331d4642b31c"
+    },
+    "accept": {
+      "message": {
+        "session_id": "0xd53527cc83a302ebc2c3208a206e3a2bed6dda7e7774a59a646ded290754cebc",
+        "config_hash": "0xeadd607718764001599859f25d772bb552c185759a4926712c87627527e1a73e",
+        "sequence": 2,
+        "actor": "0xC3A4c5eF1696195f390D03e9fE370E6BAbD28251",
+        "offer_hash": "0xac46f3f03e9a9363253311d8852a196a20598af4772b37570e1a2af5de368633"
+      },
+      "digest": "0xa3ec65a79ea65620ce3769392b6513d078fa55d2d39233438cb6c18868c96c97",
+      "signer": "seller",
+      "signature": "0xfcd62f78e849d9e45f9f42c7b5a4ad94b70fda4c400f54c7ab81efeb7a0dc18c3f8ab4d7658d950b504c1bcae8c7d6c1354d23655d7e524f41149885c39068af1b"
+    },
+    "close": {
+      "message": {
+        "session_id": "0xd53527cc83a302ebc2c3208a206e3a2bed6dda7e7774a59a646ded290754cebc",
+        "config_hash": "0xeadd607718764001599859f25d772bb552c185759a4926712c87627527e1a73e",
+        "sequence": 2,
+        "actor": "0xC3A4c5eF1696195f390D03e9fE370E6BAbD28251",
+        "reason": 1
+      },
+      "digest": "0x932d68db8d0212ae83bfce83d8ff60527ebd74fd3a2d456fef7279ba2ad6eb75",
+      "signer": "seller",
+      "signature": "0x54cbcdb3a711df7132bfb512f29b538ae18bf194e4c3171d72365ab8e5f0585145d05685b92f8800624bc5ac8c7a8edf581f785b7051297bcc66134604ceb86b1b"
+    }
+  }
+}

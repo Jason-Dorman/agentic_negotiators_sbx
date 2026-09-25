@@ -1,0 +1,1113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentnegotiation.invalid/schemas/export.v1.json",
+  "title": "Evidence export document",
+  "description": "docs/api_contract.md section 5. The archive of record for one run: what was agreed, who authorised it, what the chain did, and what it cost.\n\n`additionalProperties: false` at every level is what makes the privacy claim testable rather than asserted. The default export must validate against this schema with `private: null`, and a mandate, a raw model response or a validation feedback string appearing anywhere in it is a schema failure, not a code review finding (docs/test_strategy.md section 7). With `include_private=true`, `private` is populated and the observer reveal header was required to obtain it. Credentials and private keys appear under no option.\n\nThe export carries `signed_actions` and `calldata` so that a reader can verify the negotiation from this file alone: every digest can be recomputed, every signature recovered, and the result compared with the events. That is the same procedure the reconstruction tool performs against the chain (acceptance A15), and the two agreeing is what `metrics.audit_complete` records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "export_version",
+    "exported_at",
+    "includes_private",
+    "disclaimer",
+    "run",
+    "deployment_manifest",
+    "reproducibility",
+    "signed_actions",
+    "chain_events",
+    "calldata",
+    "balance_snapshots",
+    "decisions_public",
+    "metrics",
+    "private"
+  ],
+  "properties": {
+    "export_version": {
+      "const": "1"
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "includes_private": {
+      "type": "boolean"
+    },
+    "disclaimer": {
+      "description": "Present on every export, not a UI decoration. A public testnet may be reset, after which this file is the only record; and every value in it is a manufactured test asset (ADR-003).",
+      "type": "string",
+      "minLength": 1
+    },
+    "run": {
+      "description": "The public run resource, exactly as `GET /v1/runs/{id}` returns it.",
+      "$ref": "#/$defs/run"
+    },
+    "deployment_manifest": {
+      "$ref": "deployment_manifest.v1.json"
+    },
+    "reproducibility": {
+      "$ref": "#/$defs/reproducibility"
+    },
+    "signed_actions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/signedAction"
+      }
+    },
+    "chain_events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/chainEvent"
+      }
+    },
+    "calldata": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/calldata"
+      }
+    },
+    "balance_snapshots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/balanceSnapshot"
+      }
+    },
+    "decisions_public": {
+      "description": "One entry per decision attempt, including rejected ones \u2014 but carrying only the shape of the attempt, its cost and its timing. The response text and the validation feedback are private.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/publicDecision"
+      }
+    },
+    "metrics": {
+      "$ref": "#/$defs/metrics"
+    },
+    "private": {
+      "description": "Null unless `include_private=true` was requested with the observer reveal header.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/private"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "minorAmount": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,77})$"
+    },
+    "positiveMinorAmount": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,77}$"
+    },
+    "nullableMinorAmount": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/minorAmount"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "usdAmount": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]+\\.[0-9]{1,6}$"
+    },
+    "party": {
+      "enum": ["buyer", "seller"]
+    },
+    "actor": {
+      "enum": ["buyer", "seller", "operator", "anyone"]
+    },
+    "outcomeKind": {
+      "enum": ["pending", "settled", "closed", "expired", "aborted"]
+    },
+    "runState": {
+      "enum": [
+        "draft",
+        "validated",
+        "preparing",
+        "running",
+        "paused",
+        "recovery_required",
+        "terminal",
+        "failed_setup"
+      ]
+    },
+    "actionKind": {
+      "enum": ["offer", "accept", "close"]
+    },
+    "timelineKind": {
+      "enum": ["offer", "accept", "close", "expire", "abort", "settle"]
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "name",
+        "parent_run_id",
+        "created_at",
+        "state",
+        "state_cause",
+        "mode",
+        "outcome",
+        "deployment",
+        "session",
+        "parties",
+        "timeline",
+        "metrics",
+        "labels"
+      ],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent_run_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "state": {
+          "$ref": "#/$defs/runState"
+        },
+        "state_cause": {
+          "type": ["string", "null"]
+        },
+        "mode": {
+          "enum": ["live", "replay", "fixture"]
+        },
+        "outcome": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason_code", "reason", "actor"],
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/outcomeKind"
+            },
+            "reason_code": {
+              "type": ["integer", "null"],
+              "minimum": 1,
+              "maximum": 4
+            },
+            "reason": {
+              "type": ["string", "null"]
+            },
+            "actor": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/actor"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "deployment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["deployment_id", "chain_id", "exchange_address", "explorer_base_url"],
+          "properties": {
+            "deployment_id": {
+              "type": "string"
+            },
+            "chain_id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "exchange_address": {
+              "$ref": "#/$defs/address"
+            },
+            "explorer_base_url": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "session": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/session"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["buyer", "seller"],
+          "properties": {
+            "buyer": {
+              "$ref": "#/$defs/partyView"
+            },
+            "seller": {
+              "$ref": "#/$defs/partyView"
+            }
+          }
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/timelineEntry"
+          }
+        },
+        "metrics": {
+          "$ref": "#/$defs/runSummaryMetrics"
+        },
+        "labels": {
+          "description": "Shown on every screen and present in every export. `fixture` true means canned model responses were used and the run is not evidence of autonomous behaviour (docs/test_strategy.md section 1).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["test_assets", "simulated_economics", "fixture", "operator_abort_power"],
+          "properties": {
+            "test_assets": {
+              "const": true
+            },
+            "simulated_economics": {
+              "const": true
+            },
+            "fixture": {
+              "type": "boolean"
+            },
+            "operator_abort_power": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "config_hash",
+        "buyer_address",
+        "seller_address",
+        "base_amount_minor",
+        "expires_at_ts",
+        "max_offers",
+        "status",
+        "sequence",
+        "offer_count",
+        "active_offer",
+        "opened_tx_hash"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "config_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "buyer_address": {
+          "$ref": "#/$defs/address"
+        },
+        "seller_address": {
+          "$ref": "#/$defs/address"
+        },
+        "base_amount_minor": {
+          "$ref": "#/$defs/positiveMinorAmount"
+        },
+        "expires_at_ts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_offers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "status": {
+          "enum": ["none", "open", "settled", "closed", "expired", "aborted"]
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offer_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_offer": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "offer_hash",
+                "proposer",
+                "quote_amount_minor",
+                "valid_until_ts",
+                "sequence"
+              ],
+              "properties": {
+                "offer_hash": {
+                  "$ref": "#/$defs/digest"
+                },
+                "proposer": {
+                  "$ref": "#/$defs/party"
+                },
+                "quote_amount_minor": {
+                  "$ref": "#/$defs/positiveMinorAmount"
+                },
+                "valid_until_ts": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "opened_tx_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "partyView": {
+      "description": "No mandate, no reservation price, no prompt, no key reference value. The wallet address is public; what the wallet was told to do is not.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "policy",
+        "model_id",
+        "effort",
+        "balances",
+        "current_action",
+        "decision_status"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/address"
+        },
+        "policy": {
+          "enum": ["deterministic", "model"]
+        },
+        "model_id": {
+          "type": ["string", "null"]
+        },
+        "effort": {
+          "type": ["string", "null"]
+        },
+        "balances": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["base_minor", "quote_minor"],
+          "properties": {
+            "base_minor": {
+              "$ref": "#/$defs/minorAmount"
+            },
+            "quote_minor": {
+              "$ref": "#/$defs/minorAmount"
+            }
+          }
+        },
+        "current_action": {
+          "enum": ["idle", "deciding", "signing", "awaiting_confirmation"]
+        },
+        "decision_status": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "timelineEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "kind", "actor", "tx", "sentence", "recorded_at"],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/timelineKind"
+        },
+        "actor": {
+          "$ref": "#/$defs/actor"
+        },
+        "quote_amount_minor": {
+          "$ref": "#/$defs/nullableMinorAmount"
+        },
+        "valid_until_ts": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "offer_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "references_offer_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason_code": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 4
+        },
+        "reason": {
+          "type": ["string", "null"]
+        },
+        "tx": {
+          "$ref": "#/$defs/txView"
+        },
+        "sentence": {
+          "description": "Rendered server-side once and stored, so UI, replay and export tell the same story (ADR-024).",
+          "type": "string",
+          "minLength": 1
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "txView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tx_hash",
+        "status",
+        "block_number",
+        "block_hash",
+        "confirmations",
+        "explorer_url"
+      ],
+      "properties": {
+        "tx_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "submitted",
+            "included",
+            "confirmed",
+            "finalized",
+            "reverted",
+            "replaced",
+            "dropped"
+          ]
+        },
+        "block_number": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "block_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confirmations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "explorer_url": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "reproducibility": {
+      "description": "What would be needed to run this again. `seed_supported` is false and says so plainly: the model provider offers no seed, so a model run is not bit-reproducible and the export does not pretend otherwise. The four per-party maps are closed to `buyer` and `seller` with scalar values: as bare objects they were slots in which anything could ride out of the server, inside the one document this project asks to be believed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "policy_versions",
+        "prompt_template_versions",
+        "model_ids",
+        "effort",
+        "seed",
+        "seed_supported",
+        "protocol_version",
+        "software_version"
+      ],
+      "properties": {
+        "scenario_id": {
+          "type": ["string", "null"]
+        },
+        "policy_versions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "buyer": {
+              "type": ["string", "null"]
+            },
+            "seller": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "prompt_template_versions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "buyer": {
+              "type": ["string", "null"]
+            },
+            "seller": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "model_ids": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "buyer": {
+              "type": ["string", "null"]
+            },
+            "seller": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "effort": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "buyer": {
+              "type": ["string", "null"]
+            },
+            "seller": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "seed": {
+          "type": ["integer", "null"]
+        },
+        "seed_supported": {
+          "type": "boolean"
+        },
+        "protocol_version": {
+          "const": "1"
+        },
+        "software_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "signedAction": {
+      "description": "The authority chain, one entry per action. `typed_message` holds the exact struct fields, so a reader can recompute the digest and recover `signer` from `signature` without trusting either.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "kind", "typed_message", "digest", "signer", "signature", "tx_hash"],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "$ref": "#/$defs/actionKind"
+        },
+        "typed_message": {
+          "description": "The exact struct fields of the signed message, so a reader can recompute the digest. Property names are restricted to the union of the Offer, Accept and Close fields (docs/protocol.md section 4): a bare object here would be a hole in a schema whose job is to be exhaustive.",
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "sessionId",
+              "configHash",
+              "sequence",
+              "proposer",
+              "actor",
+              "quoteAmount",
+              "validUntil",
+              "offerHash",
+              "reason"
+            ]
+          }
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "signer": {
+          "$ref": "#/$defs/address"
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{130}$"
+        },
+        "tx_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "chainEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "block_number",
+        "block_hash",
+        "tx_hash",
+        "log_index",
+        "canonical",
+        "decoded"
+      ],
+      "properties": {
+        "event": {
+          "enum": [
+            "SessionOpened",
+            "OfferRecorded",
+            "AcceptanceRecorded",
+            "SettlementCompleted",
+            "SessionClosed",
+            "SessionExpired",
+            "SessionAborted"
+          ]
+        },
+        "block_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "block_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "tx_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "log_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "canonical": {
+          "description": "Non-canonical rows are exported too. A reorg that removed an event is part of the record, and dropping it would make the export disagree with the chain's history (docs/data_model.md section 3.11).",
+          "type": "boolean"
+        },
+        "decoded": {
+          "description": "The event's decoded arguments. Property names are restricted to the union of the seven events' fields (docs/protocol.md section 9).",
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "sessionId",
+              "buyer",
+              "seller",
+              "baseToken",
+              "quoteToken",
+              "baseAmount",
+              "quoteAmount",
+              "expiresAt",
+              "maxOffers",
+              "configHash",
+              "sequence",
+              "proposer",
+              "actor",
+              "validUntil",
+              "offerHash",
+              "operator",
+              "reason"
+            ]
+          }
+        }
+      }
+    },
+    "calldata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tx_hash", "to", "input", "decoded_function", "decoded_args"],
+      "properties": {
+        "tx_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "to": {
+          "$ref": "#/$defs/address"
+        },
+        "input": {
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]*$"
+        },
+        "decoded_function": {
+          "type": "string"
+        },
+        "decoded_args": {
+          "description": "The transaction's decoded arguments, by parameter name as the ABI declares them (docs/protocol.md section 8). Nested struct values keep their own shape; it is the names that are pinned.",
+          "type": "object",
+          "propertyNames": {
+            "enum": ["config", "offer", "acceptance", "closure", "signature", "sessionId", "reason"]
+          }
+        }
+      }
+    },
+    "balanceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "party",
+        "token",
+        "amount_minor",
+        "block_number",
+        "block_hash",
+        "canonical"
+      ],
+      "properties": {
+        "stage": {
+          "enum": ["pre_setup", "post_setup", "pre_settlement", "post_settlement", "terminal"]
+        },
+        "party": {
+          "$ref": "#/$defs/party"
+        },
+        "token": {
+          "enum": ["base", "quote", "eth"]
+        },
+        "amount_minor": {
+          "$ref": "#/$defs/minorAmount"
+        },
+        "block_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "block_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "canonical": {
+          "type": "boolean"
+        }
+      }
+    },
+    "publicDecision": {
+      "description": "Deliberately narrow. `action` is the shape of what was attempted; `status` says whether it was authorised. There is no response text and no feedback string, because a rejected attempt's feedback quotes the mandate it violated.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turn",
+        "party",
+        "attempt",
+        "status",
+        "action",
+        "usage",
+        "latency_ms",
+        "cost_estimated_usd",
+        "cost_reported_usd",
+        "label"
+      ],
+      "properties": {
+        "turn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "party": {
+          "$ref": "#/$defs/party"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": ["valid", "invalid", "model_failed"]
+        },
+        "action": {
+          "type": ["string", "null"],
+          "enum": ["offer", "accept", "walk_away", null]
+        },
+        "usage": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "input_tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "output_tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cache_read_input_tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cache_creation_input_tokens": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latency_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "cost_estimated_usd": {
+          "$ref": "#/$defs/usdAmount"
+        },
+        "cost_reported_usd": {
+          "$ref": "#/$defs/usdAmount"
+        },
+        "label": {
+          "description": "Constant. A decision record is an operational artefact, never an offer: only a signed action recorded on-chain is authority.",
+          "const": "private_operational_record_not_an_authorized_offer"
+        }
+      }
+    },
+    "runSummaryMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recorded_offers",
+        "decision_time_ms",
+        "chain_wait_ms",
+        "model_calls",
+        "model_cost_estimated_usd",
+        "model_cost_reported_usd",
+        "gas_used",
+        "fee_wei"
+      ],
+      "properties": {
+        "recorded_offers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "decision_time_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chain_wait_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_cost_estimated_usd": {
+          "$ref": "#/$defs/usdAmount"
+        },
+        "model_cost_reported_usd": {
+          "$ref": "#/$defs/usdAmount"
+        },
+        "gas_used": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fee_wei": {
+          "$ref": "#/$defs/minorAmount"
+        }
+      }
+    },
+    "metrics": {
+      "description": "Spec section 11.2. The utility and feasibility columns need both mandates, so they are absent here and appear under `private`. Separating them is what lets the export be published (docs/data_model.md section 3.13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recorded_offers",
+        "decision_time_ms",
+        "chain_wait_ms",
+        "setup_chain_wait_ms",
+        "model_calls",
+        "input_tokens",
+        "output_tokens",
+        "model_cost_estimated_usd",
+        "model_cost_reported_usd",
+        "gas_used_negotiation",
+        "gas_used_setup",
+        "fee_wei_negotiation",
+        "fee_wei_setup",
+        "settled_quote_minor",
+        "mandate_violations",
+        "failure_class",
+        "audit_complete"
+      ],
+      "properties": {
+        "recorded_offers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "decision_time_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chain_wait_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "setup_chain_wait_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_cost_estimated_usd": {
+          "$ref": "#/$defs/usdAmount"
+        },
+        "model_cost_reported_usd": {
+          "$ref": "#/$defs/usdAmount"
+        },
+        "gas_used_negotiation": {
+          "$ref": "#/$defs/minorAmount"
+        },
+        "gas_used_setup": {
+          "$ref": "#/$defs/minorAmount"
+        },
+        "fee_wei_negotiation": {
+          "$ref": "#/$defs/minorAmount"
+        },
+        "fee_wei_setup": {
+          "$ref": "#/$defs/minorAmount"
+        },
+        "settled_quote_minor": {
+          "$ref": "#/$defs/nullableMinorAmount"
+        },
+        "mandate_violations": {
+          "description": "Authorised actions outside a mandate. The target is zero, and a non-zero value is the headline result of a run, not a footnote.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "failure_class": {
+          "enum": ["model", "signing", "rpc", "execution", "none"]
+        },
+        "audit_complete": {
+          "description": "True when the reconstruction from chain data agreed with the projection (acceptance A15).",
+          "type": "boolean"
+        }
+      }
+    },
+    "private": {
+      "description": "Only with `include_private=true` and the observer reveal header, and access is logged. Credentials, private keys and keystore passwords are not here either: they are never stored (docs/data_model.md section 7).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mandates", "decisions", "observations", "evaluator"],
+      "properties": {
+        "mandates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["buyer", "seller"],
+          "properties": {
+            "buyer": {
+              "$ref": "mandate.v1.json"
+            },
+            "seller": {
+              "$ref": "mandate.v1.json"
+            }
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "evaluator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["feasible", "feasible_interval_minor", "feasible_surplus_minor"],
+          "properties": {
+            "feasible": {
+              "type": ["boolean", "null"]
+            },
+            "feasible_interval_minor": {
+              "oneOf": [
+                {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "$ref": "#/$defs/minorAmount"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "feasible_surplus_minor": {
+              "$ref": "#/$defs/nullableMinorAmount"
+            }
+          }
+        }
+      }
+    }
+  }
+}

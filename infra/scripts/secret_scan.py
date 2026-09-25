@@ -90,6 +90,30 @@ def repo_relative(path: Path) -> str:
         return path.as_posix()
 
 
+def _hex_reason(line: str, *, is_env_file: bool) -> str | None:
+    """Why this line's 64-hex values are suspicious, or None.
+
+    **Every** value on the line is considered, not just the first. `HEX64.search` returned one
+    match and the placeholder test was applied to that one, so a line like
+
+        {"example_key": "0x000…0", "private_key": "<a real key>"}
+
+    was skipped entirely because the value in front happened to look like a stand-in. The stage 1
+    fixtures are exactly this shape: worthless keys written as padded small integers, on lines that
+    name a key.
+
+    One reason per line is enough — two real keys on a line is one thing to fix, not two.
+    """
+    for match in HEX64.finditer(line):
+        if PLACEHOLDER.search(match.group(0)):
+            continue
+        if SECRET_CONTEXT.search(line):
+            return "32 bytes of hex on a line that names a key"
+        if is_env_file:
+            return "32 bytes of hex in an environment file"
+    return None
+
+
 def findings_for(path: Path, text: str) -> list[tuple[int, str]]:
     """Return (line number, reason) for every hit in one file."""
     if repo_relative(path) in ALLOWED_PATHS:
@@ -109,12 +133,9 @@ def findings_for(path: Path, text: str) -> list[tuple[int, str]]:
         if ANVIL_MNEMONIC in line:
             continue
 
-        hex_hit = HEX64.search(line)
-        if hex_hit and not PLACEHOLDER.search(hex_hit.group(0)):
-            if SECRET_CONTEXT.search(line):
-                found.append((number, "32 bytes of hex on a line that names a key"))
-            elif is_env_file:
-                found.append((number, "32 bytes of hex in an environment file"))
+        reason = _hex_reason(line, is_env_file=is_env_file)
+        if reason:
+            found.append((number, reason))
 
     return found
 

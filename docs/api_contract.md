@@ -81,6 +81,8 @@ Lists deployment manifests known to the backend.
 
 `ens` is display metadata and `null` where no names were registered. The names were resolved once, when the deploy script wrote the manifest, and the backend serves them verbatim from that row. **No route resolves ENS, and no client may treat a name as identifying a contract.** The address fields are authoritative; a client that renders a name renders the address with it ([ADR-030](decision_log.md), PRD FR-U10).
 
+`deployed_at` is an ISO-8601 timestamp rendered from the manifest's integer `deployed_at_ts`, which is the chain time the deploy script observed rather than its own clock ([ADR-038](decision_log.md)). The manifest itself is served under `deployment_manifest` in the export document (section 5) and validates against `packages/protocol/schemas/deployment_manifest.v1.json`.
+
 ```json
 {
   "deployments": [
@@ -404,7 +406,21 @@ Amounts are rendered from minor units with 6 decimals, trailing zeros trimmed.
 
 ## 5. Evidence export document
 
-`packages/protocol/schemas/export.v1.json`. Top-level:
+`packages/protocol/schemas/export.v1.json`, with `additionalProperties: false` at every level. That
+is what makes the privacy claim testable rather than asserted: the default export must validate
+against the schema with `private: null`, so a mandate, a raw model response, a validation feedback
+string or a utility figure appearing anywhere in it is a schema failure rather than something a
+reviewer has to notice ([test_strategy.md](test_strategy.md) section 7).
+
+Several slots that look permissive are not. `reproducibility`'s four per-party maps are closed to
+`buyer` and `seller` with scalar values, and `signed_actions[].typed_message`,
+`chain_events[].decoded` and `calldata[].decoded_args` restrict their **property names** to the
+fields the protocol defines — the struct fields of section 4, the event fields of section 9, and the
+ABI parameter names of section 8. Their value shapes vary, so the names are what can be pinned, and
+every private field this project has is named something not in those lists. As bare objects they
+were each a slot in which a mandate could have ridden out of the server inside this document.
+
+Top-level:
 
 ```json
 {

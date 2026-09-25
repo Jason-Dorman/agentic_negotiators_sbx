@@ -10,14 +10,17 @@ SHELL := /bin/bash
 # lives in infra/scripts/toolchain.sh.
 export PATH := $(HOME)/.local/bin:$(HOME)/.foundry/bin:$(PATH)
 
-.PHONY: help setup lint format test ci up down logs reset-db hooks
+.PHONY: help setup lint format test gates ci up down logs reset-db hooks abi fixtures artefacts snapshot snapshot-check coverage-contracts
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 setup: ## Install every toolchain and the pre-commit hooks
-	uv sync --all-groups
+	# --all-extras installs negotiation-protocol[tools], which is web3. The extra exists so the
+	# agent service image does not get an RPC client (ADR-035); a developer machine runs the
+	# reconstruction tool and type-checks it, so it needs one.
+	uv sync --all-groups --all-extras
 	pnpm install
 	forge --version
 	uv run pre-commit install
@@ -35,6 +38,7 @@ lint: ## Format check, lint and type check, all three languages
 	forge fmt --check --root contracts
 	uv run python infra/scripts/check_spdx.py
 	uv run python infra/scripts/secret_scan.py
+	$(MAKE) artefacts
 
 format: ## Apply formatters
 	uv run ruff format .
@@ -47,7 +51,50 @@ test: ## Run every test suite
 	pnpm run test
 	forge test --root contracts
 
-ci: lint test ## What CI runs
+# --------------------------------------------------------------------------------------
+# Generated protocol artefacts. Both generators are deterministic, so regenerate-and-diff is
+# the whole check; `artefacts` is what CI runs and `abi`/`fixtures` are what fixes a failure.
+# --------------------------------------------------------------------------------------
+
+abi: ## Re-export the contract ABIs into packages/protocol/abi/
+	forge build --root contracts
+	uv run python packages/protocol/tools/export_abi.py
+
+fixtures: ## Regenerate the EIP-712 fixture (a change here is a protocol version bump)
+	uv run python packages/protocol/tools/generate_eip712_fixtures.py
+
+artefacts: ## Check the committed ABIs and fixture match their generators
+	forge build --root contracts
+	uv run python packages/protocol/tools/export_abi.py --check
+	uv run python packages/protocol/tools/generate_eip712_fixtures.py
+	git diff --exit-code -- packages/protocol/fixtures/eip712.v1.json
+
+# The snapshot path is given explicitly in both targets. `--root` says where the project is, but
+# the snapshot path resolves against the working directory: the bare form wrote a stray
+# `.gas-snapshot` at the repository root and made the CI check read that non-existent file instead
+# of the committed one.
+
+snapshot: ## Rewrite the committed gas snapshot (unit tests only; fuzz gas moves with the seed)
+	forge snapshot --snap contracts/.gas-snapshot --no-match-path "test/invariant/*" --root contracts
+	# `forge snapshot` writes the file with no trailing newline, which `.editorconfig` requires and
+	# the `end-of-file-fixer` pre-commit hook supplies -- by modifying the file and failing the
+	# commit, after it has already been staged. Adding it here means the committed file is correct
+	# the first time. `forge snapshot --check` is indifferent to it, which is checked in CI.
+	@[ -n "$$(tail -c 1 contracts/.gas-snapshot)" ] && printf '\n' >> contracts/.gas-snapshot || true
+
+snapshot-check: ## Fail on a gas regression over 10 percent (test_strategy 4.3)
+	forge snapshot --check contracts/.gas-snapshot --tolerance 10 \
+		--no-match-path "test/invariant/*" --root contracts
+
+coverage-contracts: ## The 100 percent gate on NegotiationExchange (test_strategy 10)
+	forge coverage --root contracts --no-match-coverage "(test|script)/" --report summary \
+		> /tmp/negotiation-coverage.txt
+	@cat /tmp/negotiation-coverage.txt
+	@uv run python infra/scripts/check_contract_coverage.py /tmp/negotiation-coverage.txt
+
+gates: snapshot-check coverage-contracts ## The two gates that are neither lint nor test
+
+ci: lint test gates ## What CI runs
 
 up: ## Start PostgreSQL and Anvil (local profile)
 	docker compose --profile local up -d --wait

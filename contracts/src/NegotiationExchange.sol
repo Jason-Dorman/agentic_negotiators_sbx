@@ -56,12 +56,19 @@ contract NegotiationExchange is INegotiationExchange, EIP712, ReentrancyGuard {
     /// @param baseToken_ mASSET, the fixed quantity the seller delivers.
     /// @param quoteToken_ mUSD, the negotiated amount the buyer pays.
     /// @param operator_ The only address that may create or abort a session.
+    /// @dev The two legs must be distinct tokens (docs/protocol.md section 2, ADR-037). A
+    ///      same-token deployment would let `acceptAndSettle` move `quoteAmount` one way and
+    ///      `baseAmount` back in the same token, which is a net payment at a price neither
+    ///      party signed and which the event log reports as an ordinary settlement. Refusing
+    ///      it here costs one comparison and removes a failure that would otherwise be
+    ///      invisible in the evidence.
     constructor(address baseToken_, address quoteToken_, address operator_)
         EIP712("AgentNegotiationSandbox", "1")
     {
         if (baseToken_ == address(0) || quoteToken_ == address(0) || operator_ == address(0)) {
             revert InvalidParties();
         }
+        if (baseToken_ == quoteToken_) revert InvalidTokenPair();
         baseToken = baseToken_;
         quoteToken = quoteToken_;
         operator = operator_;

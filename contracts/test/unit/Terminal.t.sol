@@ -43,8 +43,19 @@ contract TerminalTest is BaseTest {
             exchange.createSession(fresh);
 
             INegotiationExchange.Close memory closure = buildClose(fresh, 1, seller, reason);
+            bytes memory signature = signClose(SELLER_PK, closure);
+
+            // The emitted reason is asserted, not just the status. Without this the suite proved
+            // only that codes 1 to 3 are *accepted*: a contract emitting a constant reason passed
+            // all 115 tests, because the one place a close reason was checked against the event
+            // used reason 1. The reason is what the timeline sentence and the run's
+            // `outcome_reason_code` are rendered from, so a wrong one is a run that reports the
+            // wrong economic outcome (docs/data_model.md section 5).
+            vm.expectEmit(true, true, true, true, address(exchange));
+            emit INegotiationExchange.SessionClosed(fresh.sessionId, 1, seller, reason);
+
             vm.prank(relay);
-            exchange.closeSession(closure, signClose(SELLER_PK, closure));
+            exchange.closeSession(closure, signature);
 
             assertEq(
                 uint8(exchange.getSession(fresh.sessionId).status),

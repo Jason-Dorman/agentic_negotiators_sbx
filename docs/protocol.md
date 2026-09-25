@@ -33,6 +33,13 @@ Two mock ERC-20 tokens deployed from OpenZeppelin `ERC20`, 6 decimals each, with
 | `mASSET` | `baseToken`, fixed quantity, seller to buyer | yes |
 | `mUSD` | `quoteToken`, negotiated amount, buyer to seller | yes |
 
+The constructor requires all three addresses to be non-zero and **`baseToken != quoteToken`**,
+reverting with `InvalidTokenPair()` otherwise ([ADR-037](decision_log.md)). A same-token deployment
+would let `acceptAndSettle` move `quoteAmount` from buyer to seller and `baseAmount` back in the
+same token: a net payment at a price neither party signed, which the event log would record as an
+ordinary settlement. The failure is silent and looks like a successful run in the evidence, so the
+contract refuses the deployment rather than leaving the deploy script as the only guard.
+
 All amounts are integers in minor units. Off-chain they are base-10 integer strings in JSON, `NUMERIC(78,0)` in PostgreSQL, and `uint256` on-chain.
 
 ## 3. Session configuration and `configHash`
@@ -171,6 +178,10 @@ function quoteToken() external view returns (address);  // immutable
 function operator() external view returns (address);    // immutable
 ```
 
+```solidity
+constructor(address baseToken_, address quoteToken_, address operator_);  // see section 2
+```
+
 The contract is non-upgradeable, has no owner-transfer, no pause, no arbitrary token or target parameters, no callbacks, and no permit path.
 
 ### 8.1 Verification order for signed actions
@@ -222,7 +233,8 @@ Every signed entry point, in order:
 |---|---|
 | `NotOperator()` | Non-operator calls an operator function |
 | `SessionExists()` | `sessionId` already used |
-| `InvalidParties()` | zero or equal buyer and seller |
+| `InvalidParties()` | zero or equal buyer and seller; zero token or operator address at construction |
+| `InvalidTokenPair()` | `baseToken == quoteToken` at construction ([ADR-037](decision_log.md)) |
 | `InvalidBaseAmount()` | `baseAmount == 0` |
 | `InvalidExpiry()` | `expiresAt <= block.timestamp` at creation |
 | `InvalidMaxOffers()` | outside 1..32 |
@@ -365,10 +377,17 @@ Given only chain access and the deployment manifest:
 5. Read ERC-20 `Transfer` events in the settlement transaction; verify amounts equal `activeQuoteAmount` and `baseAmount`.
 6. Compare balances at the block before `SessionOpened` and after the terminal event.
 
-A script implementing this lives in `packages/protocol/tools/reconstruct.py` and is run as part of acceptance.
+A script implementing this lives in `packages/protocol/tools/reconstruct.py` and is run as part of acceptance. Its only inputs are an RPC URL and a deployment manifest; it reads no database, no export and no run record, and it exits non-zero if any step above fails, so it works as a gate. Step 5 compares the transfers against the `quoteAmount` **the accepted offer was signed for**, recovered from that transaction's calldata, and not against the amount the `SettlementCompleted` event announces. The distinction is the point of the step: comparing transfers with the event would only establish that the contract was internally consistent, so a settlement that moved an amount nobody signed for — and announced that same amount — would pass. Whether the event agrees with the signature is reported as its own separate check, because "the contract misreported" and "tokens moved on authority nobody gave" are different facts about a run.
+
+Beyond the six steps the tool also asserts what must *not* be there: that the settlement transaction moved nothing besides the two legs, that no log in it came from an address the manifest does not name, that no signature recovers to the relay key, and — for a session that did not settle — that no tokens moved at all. Every check is reported individually, so a partial reconstruction is never presented as a whole one, and a reconstruction that recorded no checks reports failure rather than success.
+
+Its exit status distinguishes three outcomes, because a gate has to tell a verdict from the absence of one: `0` every check passed, `1` checks ran and one failed, `2` the tool could not reach a verdict at all — an unreadable or schema-invalid manifest, a malformed session id, an unreachable RPC.
+
+The two nullable fields of the manifest and its `start_block` are described in `packages/protocol/schemas/deployment_manifest.v1.json`; `start_block` is a lower bound on where this deployment's events can be, not the exact deployment block ([ADR-038](decision_log.md)).
 
 ## 15. Versioning
 
 - EIP-712 domain `version` and this document's version change together. Any change to a type string, `configHash` encoding, reason code, or event field is a protocol version bump and a new deployment.
 - JSON schemas carry `schema_version`. Additive optional fields in observation are minor; anything else is major.
-- The deployment manifest records the protocol version alongside addresses and code hashes.
+- The deployment manifest records the protocol version alongside addresses and code hashes. Its own shape is versioned separately by `manifest_version`, because a new optional manifest field is not a new protocol ([ADR-038](decision_log.md)).
+- The cross-language fixture `packages/protocol/fixtures/eip712.v1.json` is generated from this document's domain, type strings and `configHash` encoding. **Every value in it is determined by those three things, so a change to the file is a protocol version bump**, never a regeneration. CI regenerates it and fails on any diff. Four independent EIP-712 implementations are checked against it: the generator's own, `eth_account`'s, `viem`'s and OpenZeppelin's.

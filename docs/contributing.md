@@ -18,7 +18,7 @@ The core mantra from [engineering-principles.md](engineering-principles.md) appl
 | `apps/web/` | React app, typed client (`@negotiation/web`) | May import only from `packages/protocol` (TS) and generated OpenAPI types |
 | `services/api/src/api/` | Backend (`negotiation-api`) | Modules listed in [architecture.md](architecture.md) 3.2; import boundaries below |
 | `services/agent/src/agent/` | Agent service (`negotiation-agent`) | No database, no RPC, no imports from `services/api` |
-| `packages/protocol/` | Schemas, ABI, fixtures, reason tables, reconstruction tool (`negotiation-protocol`, `@negotiation/protocol`) | Imports nothing from services or apps |
+| `packages/protocol/` | Schemas, ABI, fixtures, reason tables, reconstruction tool (`negotiation-protocol`, `@negotiation/protocol`) | Imports nothing from services or apps. `abi/*.json` and `fixtures/eip712.v1.json` are generated and checked by `make artefacts` — edit the generator, never the file |
 | `contracts/` | Solidity, Foundry tests, deploy scripts | OpenZeppelin only; no custom crypto |
 | `scenarios/` | Scenario JSON | Validated by schema in CI |
 | `infra/` | Compose profiles, `.env.example`, keystore directory (git-ignored), repository scripts | |
@@ -35,8 +35,13 @@ The project is licensed Apache-2.0. `LICENSE` and `NOTICE` live at the repositor
 | `make setup` | `uv sync`, `pnpm install`, `pre-commit install` |
 | `make lint` | ruff format and check, `mypy --strict`, prettier, eslint, `tsc`, `forge fmt`, SPDX check, secret scan |
 | `make test` | `pytest`, `vitest`, `forge test` |
-| `make ci` | `make lint` then `make test`; the same commands the pipeline runs |
+| `make ci` | `make lint`, `make test`, then `make gates`; the same commands the pipeline runs |
+| `make gates` | The gas snapshot check and the contract coverage threshold — the gates that are neither lint nor test |
 | `make up` / `make down` | The local Compose profile: PostgreSQL and Anvil |
+| `make artefacts` | Check the committed ABIs and EIP-712 fixture against their generators (part of `make lint`) |
+| `make abi` / `make fixtures` | Regenerate those two. A changed fixture is a protocol version bump, not a chore |
+| `make snapshot` | Rewrite `contracts/.gas-snapshot` after an intended gas change |
+| `make snapshot-check` / `make coverage-contracts` | The two gates individually |
 
 ### 1.1 Import boundaries (backend)
 
@@ -110,6 +115,12 @@ From [test_strategy.md](test_strategy.md):
 - Coverage thresholds in the test strategy are CI gates.
 - **A green suite is evidence only against the mutations it has been shown.** Before marking a test deliverable done, break the thing the test claims to protect and confirm the suite goes red. This is not ceremony: the stage 1 review found that deleting the signature check from `acceptAndSettle` — the only function that moves tokens — left all 80 tests passing, because every signature test targeted a different entry point. Coverage was 99 percent at the time. Line coverage says a line ran, not that anything would notice if it changed.
 - Two Foundry cheatcode traps that produce tests which pass for the wrong reason. `vm.expectRevert` must immediately precede the call under test: an external call in the argument list, including any helper that reads from the contract, consumes the expectation. `vm.prank` is consumed the same way, so a `balanceOf` inside a pranked call's arguments redirects the real call to the test contract. Both have already caused silent failures in this repository.
+- **A property-based suite can be green and unfalsifiable, and coverage will not tell you.** Three of eight mutations survived the first version of the stage 1 invariant suite while coverage stood at 100 percent, and in every case the fault was in how the handler explored rather than in what the invariants asserted: a coin-flip actor choice meant runs never got deep enough to settle, so the settled branch of the conservation invariant was never evaluated; following the chain for the ghost terminal status let one invariant compare the chain against itself; and a uniform `maxOffers` put the offer-limit boundary out of reach. When you add an invariant, add the mutation that should break it, and check that it does. The three fixes are written up in [test_strategy.md](test_strategy.md) section 4.2.
+- **A gate you have not run the way CI runs it is not a gate.** Stage 1 enabled the gas-snapshot job and no `make` target invoked it, so two faults went unnoticed until a review: the committed snapshot predated a new test file, and `forge snapshot --check … --root contracts` resolves the snapshot path against the working directory rather than against `--root`, reading a non-existent file. `make ci` therefore runs every gate that exists, and a gate's assertion lives in a script with tests rather than in a heredoc inside the workflow.
+- **`bash -e` is not `bash -o pipefail`.** A GitHub Actions `run:` step gets the first and not the second, so `some-command | tee log` reports `tee`'s exit status and a failing command sails through. The same trap makes `cmd | grep …; echo $?` useless when checking a tool's status by hand — which cost real time during this review.
+- **An exact set beats a denylist.** The ABI suite listed fifteen forbidden function names; an escape hatch called anything else passed. Assert the whole set, so that adding an external function is a deliberate edit to the test.
+- **For a schema that claims to be exhaustive, assert the field list, not only the values.** Every negative-instance test in the observation suite passed while the schema carried a field the protocol document does not list. Nothing was checking the names against the document, and no value-level test could have.
+- **Test the thing, not a stand-in for it, where the claim is about the outside world.** The deploy script is tested by deploying to a real Anvil and the reconstruction tool by reading what that chain actually recorded. Two defects came out of it that a fake would have hidden: `vm.serializeJson` sets an object's whole contents rather than adding to them, which silently reduced the deployment manifest to a single key, and web3's `process_receipt` decodes logs by event signature regardless of emitting address, which made every two-leg settlement appear to have four transfers because the two mock tokens share an ABI.
 
 ## 4. Change workflow
 

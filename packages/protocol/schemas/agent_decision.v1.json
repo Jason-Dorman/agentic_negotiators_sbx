@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentnegotiation.invalid/schemas/agent_decision.v1.json",
+  "title": "Agent decision envelope",
+  "description": "docs/protocol.md section 11. The single JSON object a policy returns. This schema is structural validation only: whether the decision is economically permitted is the policy signer's job (MandateValidator), and whether it is legal is the contract's. Keeping the three separate is ADR-006. Note what is absent: sessionId, configHash, sequence, actor address and validUntil. The controller supplies those from validated state, and a model that could set them could sign a trade in another session.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision"],
+  "properties": {
+    "decision": {
+      "description": "Exactly one action. `oneOf` rather than `anyOf`: an object matching two branches is a malformed decision, not a permissive one.",
+      "oneOf": [
+        { "$ref": "#/$defs/offer" },
+        { "$ref": "#/$defs/accept" },
+        { "$ref": "#/$defs/walkAway" }
+      ]
+    },
+    "explanation": {
+      "description": "Operator-facing self-report. Never sent to the counterparty, never on-chain, never in an observation. Displayed labelled as the agent's own account of its reasoning, which is not evidence of it.",
+      "type": "string",
+      "maxLength": 280
+    }
+  },
+  "$defs": {
+    "offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "quote_amount_minor"],
+      "properties": {
+        "action": { "const": "offer" },
+        "quote_amount_minor": {
+          "description": "Positive integer in minor units, as a base-10 string with no leading zeros, no sign, no decimal point and no exponent. A string because a JSON number would be a float in most parsers and a price is exact.",
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,77}$"
+        }
+      }
+    },
+    "accept": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "offer_hash"],
+      "properties": {
+        "action": { "const": "accept" },
+        "offer_hash": {
+          "description": "Must equal the active offer digest in the observation. A digest that does not is an invalid decision, not a different trade.",
+          "type": "string",
+          "pattern": "^0x[0-9a-fA-F]{64}$"
+        }
+      }
+    },
+    "walkAway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "reason"],
+      "properties": {
+        "action": { "const": "walk_away" },
+        "reason": {
+          "description": "docs/protocol.md section 10, participant close codes 1..3 by name. The agent's statement, not a verified fact.",
+          "enum": ["terms_unacceptable", "inventory_constraint", "no_further_concession"]
+        }
+      }
+    }
+  }
+}
