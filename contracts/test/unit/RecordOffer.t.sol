@@ -74,7 +74,7 @@ contract RecordOfferTest is BaseTest {
     function test_turn_rule_survives_expiry_of_the_active_offer() public {
         recordOfferAs(config, 1, buyer, BUYER_PK, 94 * ONE_TOKEN);
 
-        vm.warp(block.timestamp + OFFER_LIFETIME + 1);
+        vm.warp(vm.getBlockTimestamp() + OFFER_LIFETIME + 1);
 
         INegotiationExchange.Offer memory buyerAgain = buildOffer(config, 2, buyer, 95 * ONE_TOKEN);
         bytes memory buyerAgainSignature = signOffer(BUYER_PK, buyerAgain);

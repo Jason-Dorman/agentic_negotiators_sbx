@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentnegotiation.invalid/schemas/observation.v1.json",
+  "title": "Policy observation (allowlist)",
+  "description": "docs/protocol.md section 12. The only data a policy receives, and the list is exhaustive: `additionalProperties: false` at every level is the machine-readable form of the agent boundary, and acceptance A12 is the test that nothing else gets through.\n\nThree absences are load-bearing. There is no counterparty mandate, and no field from which one could be derived. There is no counterparty *rejected* attempt or validation feedback \u2014 `my_previous_decisions` holds the agent's own rejected attempts and its own private feedback, and the other side's never appear anywhere in this structure. And there is no reservation price but the agent's own, inside `mandate`.\n\n`history` contains confirmed on-chain actions only. An action that was broadcast but is not yet canonical at the confirmation threshold is not a fact about the negotiation yet, and an agent that could see one could act on a trade that a reorg then removed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "role",
+    "my_address",
+    "session",
+    "chain_time",
+    "expected_sequence",
+    "offers_remaining_for_me",
+    "active_offer",
+    "history",
+    "my_balances",
+    "my_previous_decisions",
+    "mandate"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1"
+    },
+    "run_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "role": {
+      "enum": ["buyer", "seller"]
+    },
+    "my_address": {
+      "$ref": "#/$defs/address"
+    },
+    "session": {
+      "$ref": "#/$defs/session"
+    },
+    "chain_time": {
+      "description": "Latest chain timestamp, in Unix seconds. The policy's only clock: a policy that read the wall clock could sign a `validUntil` the contract refuses (docs/protocol.md section 6).",
+      "$ref": "#/$defs/unixSeconds"
+    },
+    "expected_sequence": {
+      "description": "The sequence this turn's action must carry. Supplied, not chosen: the model cannot set it.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "offers_remaining_for_me": {
+      "description": "Own offer opportunities left under `max_offers`. Acceptance does not consume one (docs/protocol.md section 13).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "active_offer": {
+      "description": "The offer currently executable by its counterparty, or null when none stands.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/activeOffer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/historyEntry"
+      }
+    },
+    "my_balances": {
+      "$ref": "#/$defs/balances"
+    },
+    "my_previous_decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/previousDecision"
+      }
+    },
+    "mandate": {
+      "description": "This agent's own mandate, never the counterparty's. The observation builder is called with the acting party and receives only that row; an import-boundary test forbids it reaching for the other (docs/data_model.md section 3.4).",
+      "$ref": "mandate.v1.json"
+    }
+  },
+  "$defs": {
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{64}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "unixSeconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "minorAmount": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,77})$"
+    },
+    "positiveMinorAmount": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,77}$"
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "config_hash",
+        "chain_id",
+        "exchange_address",
+        "base_token",
+        "quote_token",
+        "base_amount_minor",
+        "expires_at",
+        "max_offers",
+        "token_decimals"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "config_hash": {
+          "description": "Recomputed by the agent service from its own approved run configuration; it refuses to sign if the on-chain SessionOpened event does not match (docs/protocol.md section 3).",
+          "$ref": "#/$defs/digest"
+        },
+        "chain_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exchange_address": {
+          "$ref": "#/$defs/address"
+        },
+        "base_token": {
+          "$ref": "#/$defs/address"
+        },
+        "quote_token": {
+          "$ref": "#/$defs/address"
+        },
+        "base_amount_minor": {
+          "$ref": "#/$defs/positiveMinorAmount"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/unixSeconds"
+        },
+        "max_offers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "token_decimals": {
+          "type": "integer",
+          "const": 6
+        }
+      }
+    },
+    "activeOffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offer_hash", "proposer", "quote_amount_minor", "valid_until", "sequence"],
+      "properties": {
+        "offer_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "proposer": {
+          "description": "A role, not an address. The addresses are public on-chain, but naming the role is what the policy reasons about.",
+          "enum": ["buyer", "seller"]
+        },
+        "quote_amount_minor": {
+          "$ref": "#/$defs/positiveMinorAmount"
+        },
+        "valid_until": {
+          "$ref": "#/$defs/unixSeconds"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "historyEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "actor", "kind"],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "actor": {
+          "enum": ["buyer", "seller", "operator", "anyone"]
+        },
+        "kind": {
+          "enum": ["offer", "accept", "close", "expire", "abort", "settle"],
+          "description": "The action's kind. In practice only `offer` reaches a policy: history holds confirmed on-chain actions, every other kind is terminal, and no observation is built after a session terminates. The wider enum is kept because it costs nothing -- an allowlisted field's value range is not a leak, only its presence is -- and narrowing it would make the schema disagree with the timeline kinds used everywhere else. Do not add a field here to carry a terminal action's reason: that is a change to docs/protocol.md section 12."
+        },
+        "quote_amount_minor": {
+          "$ref": "#/$defs/positiveMinorAmount"
+        },
+        "valid_until": {
+          "$ref": "#/$defs/unixSeconds"
+        },
+        "offer_hash": {
+          "$ref": "#/$defs/digest"
+        },
+        "status": {
+          "enum": ["active", "replaced", "expired", "accepted", "terminal"]
+        }
+      },
+      "description": "One confirmed on-chain action. The fields are exactly those docs/protocol.md section 12 lists and no others: the allowlist is the whole point, so a field that would be convenient here -- a terminal action's reason code, for instance -- has to be added to section 12 first, deliberately, as a protocol change."
+    },
+    "balances": {
+      "description": "This agent's own balances only. The counterparty's are public on-chain, but the observation does not assemble them: a policy that wants to reason about them can reason about what it is told, and a narrower allowlist is a narrower thing to audit.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_minor", "quote_minor"],
+      "properties": {
+        "base_minor": {
+          "$ref": "#/$defs/minorAmount"
+        },
+        "quote_minor": {
+          "$ref": "#/$defs/minorAmount"
+        }
+      }
+    },
+    "previousDecision": {
+      "description": "One of this agent's own earlier attempts, including rejected ones and the private validation feedback it was given. The counterparty never sees any of this, and the counterparty's own rejected attempts never appear here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn", "decision", "result"],
+      "properties": {
+        "turn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "decision": {
+          "$ref": "agent_decision.v1.json#/properties/decision"
+        },
+        "result": {
+          "enum": ["recorded", "settled", "closed", "rejected", "failed"]
+        },
+        "feedback": {
+          "description": "The private validation feedback for a rejected attempt. Present only on this agent's own rejections.",
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    }
+  }
+}

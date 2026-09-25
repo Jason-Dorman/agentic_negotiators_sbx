@@ -70,7 +70,52 @@
 
 ### 4.2 Fuzz and invariant
 
-Handler-based invariant test with random valid and invalid actions across many sessions:
+Handler-based invariant test with random valid and invalid actions across many sessions, in
+`contracts/test/invariant/`. Alongside it, `Fuzz.t.sol` holds the stateless properties: the unit
+suite asks whether `maxOffers = 33` reverts, the fuzz suite asks whether *any* value outside 1..32
+does not.
+
+Three things about the handler are load-bearing rather than incidental, and each of them was
+learned by watching a mutation survive:
+
+- **It is right about three quarters of the time.** A handler that chose the proposer and the actor
+  by coin flip halved the chance of each subsequent step being legal, and a 32-call run then
+  essentially never reached a settlement — so invariant 5's *settled* branch was never evaluated and
+  the suite passed on its unsettled branch alone. Deviating a quarter of the time keeps the illegal
+  paths covered while letting runs get deep enough to trade. Depth is 64 for the same reason.
+- **Ghost state moves only on success, and a terminal status is written once.** Following the chain
+  instead is how a mutation escaped: with the status check removed from `expireSession`, an
+  already-settled session could be re-marked Expired, the handler dutifully recorded Expired, and
+  the monotonicity invariant compared the chain against itself and passed.
+- **Sessions have uneven and deliberately tiny offer limits (1, 2, 8).** With `maxOffers = 8`
+  everywhere, reaching `OfferLimitReached` needs nine accepted offers in one session, which a
+  64-call run over six sessions does not produce; invariant 3 was unfalsifiable and deleting the
+  limit check survived.
+
+Each session owns its own wallet pair, so a balance delta is attributable to one settlement.
+
+A05 gets a dedicated adversarial action (`submitStaleAccept`) rather than a branch of the ordinary
+acceptance, because as a branch it was unreachable in practice: the valid acceptance is drawn three
+times as often and settles the session first.
+
+**Two states the campaign cannot be trusted to reach are seeded in the handler's constructor**, and
+both were added because a mutation was caught on some campaigns and not others. A mutation test that
+passes four times in five is worse than none, because it will be believed.
+
+| Seed | The state | The mutation it makes falsifiable |
+|---|---|---|
+| Slot 2 records two offers | one **displaced** digest exists from call one | deleting the `StaleOfferDigest` check |
+| Slot 6 is opened with a 120 s life and closed at once | a session that is **terminal** and, after one time advance, **past its deadline** | deleting `expireSession`'s status check |
+
+The second is the sharper illustration. To catch that mutation unaided, a campaign had to terminate
+a session, push chain time past that session's expiry, *and* then call `expireSession` on that same
+session — a conjunction the fuzzer reached about five times in six. Seeded, the mutation fails the
+invariant suite on every run.
+
+That is the general shape of every handler property above: the fuzzer explores, and the
+*reachability of the interesting state* is arranged deliberately rather than hoped for.
+
+The properties:
 
 - Status is monotonic: once non-Open, never changes.
 - `sequence` strictly increases by exactly 1 per successful participant action.
@@ -78,21 +123,96 @@ Handler-based invariant test with random valid and invalid actions across many s
 - Sum of buyer and seller balances per token is constant across settlement (conservation).
 - If Settled, exactly one settlement transfer pair happened and its amounts equal the last recorded offer's `quoteAmount` and `baseAmount`.
 - A digest that was ever replaced is never accepted.
-- Random signature mutation (bit flips, wrong key, wrong domain) never succeeds.
+- Random signature mutation never succeeds. Six kinds, all relative to the key the message
+  actually names: a flipped bit in `r`, a flipped bit in `s`, a swapped `v`, a stranger's key, the
+  counterparty's key, and a signature over a forged domain separator for another chain and
+  contract. The first version of this helper always mutated the buyer's signature, so for an
+  acceptance — where the seller names itself — the "counterparty key" case handed back a perfectly
+  valid signature, and the invariant correctly reported that a forgery had settled a session.
+
+**The suite is confirmed by mutation, not by coverage.** Eight mutations to `NegotiationExchange`
+were applied one at a time and the invariant suite alone run against each: settlement not terminal,
+the settlement legs' **amounts** swapped, the stale-digest check deleted, the signature check
+deleted, the sequence advanced by two, the offer limit not enforced, the active offer left set after
+settlement, and the status check removed from `expireSession`. All eight fail it. Three survived the
+suite's first version, and the three handler properties above are what closed them.
+
+Two limits of that claim, both worth stating because a reader would otherwise over-read it.
+
+*The invariant suite cannot distinguish a broken settlement from a campaign that never settled.*
+"Legs swapped" was verified for the amounts. Swapping the legs' **direction** or their **token** is
+caught by `Accept.t.sol`, which asserts exact deltas deterministically, rather than reliably by the
+invariant suite — whose settled branch is only evaluated in runs where a settlement happened. This
+is the same seed-dependence that makes a liveness assertion in `afterInvariant` unacceptable, and it
+is why the deterministic unit suite is not redundant with the property suite. The division of labour
+is worth stating: **the unit suite is what catches a mutation every time; the invariant suite is what
+catches one nobody thought to write a unit test for.** Where only the second would notice something,
+the state it needs is seeded rather than left to the seed.
+
+*Two further mutations were found by the stage 1 adversarial review and are now caught by the unit
+suite rather than the invariant one:* emitting a constant `SessionClosed.reason` (no test asserted
+the emitted reason for codes 2 or 3), and adding an arbitrarily named escape-hatch function such as
+`adminSettle` (the ABI suite asserted a fifteen-name denylist rather than an exact function set).
+Both are now pinned by exact assertions, and both were verified to fail by mutation.
 
 ### 4.3 Gas snapshot
 
-`forge snapshot` committed; CI fails on more than 10 percent regression without a decision-log note.
+`contracts/.gas-snapshot` committed; CI fails on more than 10 percent regression without a
+decision-log note (`forge snapshot --check --tolerance 10`). The snapshot covers the deterministic
+unit tests only (`--no-match-path "test/invariant/*"`): fuzz and invariant gas figures move with the
+seed, so including them would make the gate report noise as a regression and train people to
+override it. `make snapshot` rewrites it.
 
 ## 5. Protocol fixtures
 
-`packages/protocol/fixtures/` holds JSON with: a session config and its expected `configHash`; an Offer, Accept, and Close with private key, expected digest, and signature; the domain. Three test suites read the same file:
+`packages/protocol/fixtures/eip712.v1.json` holds: the domain and its separator, the three
+byte-exact type strings and their type hashes, a session config and its expected `configHash`, and
+an Offer, Accept and Close each with its signing key, expected digest and expected signature. It is
+written by `packages/protocol/tools/generate_eip712_fixtures.py`, which computes every value by hand
+from [protocol.md](protocol.md) sections 3 and 4.
 
-- Foundry computes `hashOffer` and compares.
-- Python (`eth-account`) signs and compares digest and signature.
-- TypeScript (`viem` or `ethers`) computes the digest and compares.
+**Four independent EIP-712 implementations are checked against it**, not three:
 
-A mismatch in any language fails the build. This is the guard for field-name and type alignment.
+| Implementation | Where | How |
+|---|---|---|
+| The generator's own | `negotiation_protocol.eip712` | keccak and `abi.encode` from the document |
+| `eth_account` | `packages/protocol/tests/test_eip712_fixtures.py` | `encode_typed_data`, then sign and recover |
+| `viem` | `packages/protocol/tests/eip712.test.ts` | `hashTypedData`, `hashDomain`, `recoverTypedDataAddress` |
+| OpenZeppelin | `contracts/test/unit/Fixtures.t.sol` | the contract's own `hashOffer`, `hashAccept`, `hashClose` |
+
+A mismatch in any language fails the build. This is the guard for field-name and type alignment, and
+each suite goes past digest equality in its own way. Python derives the typed-data structure *from
+the fixture's own type strings*, so a field renamed on one side leaves a name with no counterpart
+rather than a digest that quietly differs. Foundry places the contracts at the fixture's own
+addresses with `vm.deployCodeTo` and `vm.chainId` — the separator includes both, so a digest can
+only be reproduced by a contract that actually lives there — and then **replays the fixture's Offer
+and Accept with the fixture's own signatures** and asserts the settlement moved the signed amounts.
+A fixture whose digests matched but whose signatures the contract refused would be a fixture of an
+action that cannot happen.
+
+Every value in the file is determined by the domain, the type strings and the `configHash`
+encoding, so **a change to it is a protocol version bump** ([protocol.md](protocol.md) section 15),
+never a regeneration. CI regenerates it and fails on any diff; `make fixtures` is what a deliberate
+bump runs.
+
+The reason-code tables get the same treatment. `packages/protocol/fixtures/reason_codes.v1.json` is
+the single source, and the Python and TypeScript tables are each checked against it, so a code added
+in one language alone fails the build rather than producing a timeline sentence that describes a
+different walk-away than the chain recorded.
+
+The committed ABI artefacts in `packages/protocol/abi/` are checked the same way
+(`export_abi.py --check`): a stale copy would have the indexer decoding events against an ABI the
+contract no longer has. `packages/protocol/tests/test_abi.py` additionally asserts every event's
+field order and `indexed` flags, every error's parameter types, and the **exact function set**
+against the text of [protocol.md](protocol.md) — an exact set rather than a denylist, because a
+denylist of fifteen names let an escape hatch called anything else through.
+
+The observation schema gets the same treatment from the other direction. `test_schemas.py` asserts
+that its field names *are* section 12's, transcribed by hand from the document rather than derived
+from the schema, and that every object in it closes its properties recursively. Every other schema
+test asks whether a *value* is refused; these ask whether the field list is the document's, which is
+a different question — and the one that caught a `reason_code` in `historyEntry` that section 12 does
+not list, inside the schema that declares itself that section's exhaustive form.
 
 ## 6. Agent service tests
 
@@ -142,7 +262,28 @@ Live model runs are not deterministic and are not CI gates. They are **recorded 
 | Web unit | merge |
 | Playwright E2E | merge to main |
 | Gas snapshot regression | merge, override by decision-log entry |
-| Coverage: contracts 100 percent lines on `NegotiationExchange`; agent validator and signer 100 percent branches; backend 85 percent lines | merge |
+| Coverage: contracts 100 percent lines on `NegotiationExchange` (live from stage 1); agent validator and signer 100 percent branches, backend 85 percent lines (stage 2) | merge |
+| Protocol artefacts match their generators: committed ABIs and the EIP-712 fixture | merge |
+
+`make ci` runs **every** gate in this table that exists yet, including the gas snapshot and the
+contract coverage threshold. It did not, briefly, and the consequence was the thing this table is
+supposed to prevent: the gas-snapshot job was enabled in stage 1 while no local command ran it, so
+it went unnoticed that the snapshot predated `Fixtures.t.sol` and that
+`forge snapshot --check … --root contracts` resolves the snapshot path against the *working
+directory* rather than against `--root` — reading a non-existent file at the repository root. The
+gate would have failed on the branch that introduced it. Both callers now name
+`contracts/.gas-snapshot` explicitly, and `make ci` depends on `make gates`.
+
+The coverage threshold's assertion lives in `infra/scripts/check_contract_coverage.py` with its own
+tests, not in a heredoc inside the workflow, for the same reason: it is the gate's only real
+assertion, and the failure that matters is a *missing* row reading as a pass. Its `forge coverage`
+output is redirected rather than piped, because `run:` is `bash -e` without `-o pipefail` and a pipe
+would hand the step `tee`'s exit status.
+
+The contract half of the coverage gate is enforced from stage 1, when the contract exists, and
+checks all four figures `forge coverage` reports — lines, statements, branches and functions — at
+100 percent rather than lines alone. The other two thresholds are turned on with the code they
+measure.
 
 The coverage thresholds were confirmed by the product owner on 21 September 2026. They are deliberately uneven: the contract and the two components that convert a model's words into authority are the places where a missed branch is an incorrect transfer, while the backend's remaining 15 percent is mostly error plumbing that integration tests exercise end to end.
 

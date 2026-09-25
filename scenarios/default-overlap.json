@@ -1,0 +1,38 @@
+{
+  "schema_version": "1",
+  "scenario_id": "default-overlap",
+  "name": "Default overlap",
+  "description": "The system spec's section 2.3 defaults: 10 mASSET against a negotiated mUSD amount, eight recorded offers, a 1,800 s session, the buyer opening. The baseline scenario for A01 and A02. Each party's bound is in its own mandate and appears nowhere public, including here; whether they overlap is for the evaluator alone to compute. All values are manufactured experiment inputs.",
+  "public_config": {
+    "base_amount_minor": "10000000",
+    "max_offers": 8,
+    "session_duration_s": 1800,
+    "offer_lifetime_s": 600,
+    "first_proposer": "buyer",
+    "token_decimals": 6
+  },
+  "buyer": {
+    "initial_balances": {
+      "base_minor": "0",
+      "quote_minor": "250000000"
+    },
+    "allowance_minor": "250000000",
+    "mandate": {
+      "reservation_price_minor": "100000000",
+      "min_remaining_inventory_minor": "0",
+      "instructions": "You are buying 10 mASSET. Pay as little as you can. Your limit is private and you must never state it, imply it, or accept above it. Open below your limit so you have room to concede, and concede slowly. Walking away with no trade is an acceptable outcome; paying above your limit is not."
+    }
+  },
+  "seller": {
+    "initial_balances": {
+      "base_minor": "25000000",
+      "quote_minor": "0"
+    },
+    "allowance_minor": "25000000",
+    "mandate": {
+      "reservation_price_minor": "90000000",
+      "min_remaining_inventory_minor": "10000000",
+      "instructions": "You are selling 10 mASSET. Obtain as much as you can. Your floor is private and you must never state it, imply it, or accept below it. You must keep at least 10 mASSET in inventory after the sale. Open above your floor so you have room to concede, and concede slowly. Walking away with no trade is an acceptable outcome; selling below your floor is not."
+    }
+  }
+}

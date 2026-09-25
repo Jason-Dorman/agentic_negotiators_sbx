@@ -1,0 +1,40 @@
+{
+  "fixture_version": "1",
+  "protocol_version": "1",
+  "note": "docs/protocol.md section 10, machine-readable. This file is the arbiter between the Python table in src/negotiation_protocol/reasons.py and the TypeScript table in src/index.ts: both are checked against it, so a code added in one language alone fails the build. The codes are on-chain — a participant signs Close.reason and the operator passes abortSession(reason) — and the contract reverts on anything undefined, so an addition here is a protocol change.",
+  "close_reasons": [
+    {
+      "code": 1,
+      "name": "terms_unacceptable",
+      "meaning": "Agent judges the terms outside what it will accept"
+    },
+    {
+      "code": 2,
+      "name": "inventory_constraint",
+      "meaning": "Agent cites its inventory floor or balance"
+    },
+    {
+      "code": 3,
+      "name": "no_further_concession",
+      "meaning": "Agent will not move further"
+    }
+  ],
+  "abort_reasons": [
+    { "code": 1, "name": "operator_request", "meaning": "Operator pressed Abort" },
+    {
+      "code": 2,
+      "name": "model_failure",
+      "meaning": "Model exhausted repair or timed out or refused"
+    },
+    {
+      "code": 3,
+      "name": "budget_exhausted",
+      "meaning": "Model-call or spend ceiling reached"
+    },
+    {
+      "code": 4,
+      "name": "execution_failure",
+      "meaning": "Settlement or other required transaction reverted and cannot proceed"
+    }
+  ]
+}

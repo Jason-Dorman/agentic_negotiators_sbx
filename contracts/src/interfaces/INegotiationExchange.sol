@@ -141,6 +141,7 @@ interface INegotiationExchange {
     error NotOperator();
     error SessionExists();
     error InvalidParties();
+    error InvalidTokenPair();
     error InvalidBaseAmount();
     error InvalidExpiry();
     error InvalidMaxOffers();

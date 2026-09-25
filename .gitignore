@@ -50,6 +50,10 @@ Thumbs.db
 *.log
 
 # --- Run artefacts that are regenerated, not evidence ---
+# Local Anvil deployment manifests. The chain they describe lives only as long as the container,
+# so a committed copy would be evidence of nothing; Sepolia manifests ARE committed
+# (build_plan.md stage 5, ADR-038).
+docs/deployments/local-*.json
 # Evidence exports under docs/evidence/ ARE committed (test_strategy.md section 9).
 /tmp/
 *.local

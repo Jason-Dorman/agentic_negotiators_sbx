@@ -53,7 +53,7 @@ The operator sets each agent's private mandate and starts a run. On each turn th
 | `apps/web/` | React application and typed API client | Stage 4 |
 | `services/api/` | FastAPI backend: run controller, chain relay, indexer | Stage 2 |
 | `services/agent/` | Agent service; run as two instances | Stages 2 and 3 |
-| `packages/protocol/` | JSON schemas, ABI artifacts, EIP-712 fixtures, reconstruction tool | Stage 1 |
+| `packages/protocol/` | JSON schemas, ABI artifacts, EIP-712 fixtures, reason tables, reconstruction tool | Stage 1 |
 | `contracts/` | Solidity sources, Foundry tests, deployment scripts | Stage 1 |
 | `scenarios/` | Manufactured scenario templates and evaluation populations | Stages 1 and 6 |
 | `infra/` | Compose profiles, environment template, key and scan scripts | Stage 0 |
@@ -65,9 +65,10 @@ Start at [docs/README.md](docs/README.md). The originating specification is [doc
 
 ## Getting started
 
-There is nothing to negotiate with yet — the protocol, the contracts and the services arrive in
-stages 1 to 3. What works today is the toolchain, the local chain and the database, which is
-what stage 0 set out to deliver.
+The contracts and the protocol package are in (stage 1). What is not in yet is anything that drives
+them: the backend, the agent services and the two policies arrive in stages 2 and 3, so there is no
+run to start from a browser. What works today is a deployable exchange, a settlement you can drive
+by hand, and a tool that reconstructs it from chain data alone.
 
 Prerequisites: [uv](https://docs.astral.sh/uv/), Node 22 with Corepack, [Foundry](https://getfoundry.sh),
 Docker with Compose. Exact versions are in [ADR-033](docs/decision_log.md). `make` and the
@@ -81,6 +82,9 @@ make ci                     # every gate the build has earned so far
 make down                   # stop, keeping the database volume
 ```
 
+To see the contracts work, deploy them to the local Anvil and reconstruct a session from the chain:
+[docs/runbook.md](docs/runbook.md) sections 4 and 5.
+
 `make help` lists the rest. Configuration lives in `infra/.env.example`; copy it to `infra/.env`,
 which is git-ignored, when a stage needs one. The local profile runs on defaults without it.
 
@@ -90,8 +94,9 @@ The stack keeps to itself: its own Compose project (`agent_negotiation`), its ow
 moves the published host port; inside the network, services use `postgres:5432`. See
 [docs/runbook.md](docs/runbook.md) section 2.
 
-The operator runbook — funding a testnet demonstration, recovery, replay and export — starts in
-stage 2 at `docs/runbook.md` and is completed in stage 5.
+The operator runbook covers local startup, the ports, keys, deploying the contracts and
+reconstructing a session from chain data. Recovery, funding a testnet demonstration, replay and
+export arrive with the stages that make them true; it is completed in stage 5.
 
 ## License
 

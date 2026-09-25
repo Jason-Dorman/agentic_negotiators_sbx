@@ -1,0 +1,38 @@
+{
+  "schema_version": "1",
+  "scenario_id": "infeasible-clone",
+  "name": "Infeasible clone",
+  "description": "The default-overlap scenario with the seller's mandate replaced, for acceptance A03. The public configuration is identical, so nothing an agent can see distinguishes this run from the baseline: they negotiate, fail to converge, and one of them leaves. A walk-away or an expiry is the correct economic outcome here. All values are manufactured experiment inputs.",
+  "public_config": {
+    "base_amount_minor": "10000000",
+    "max_offers": 8,
+    "session_duration_s": 1800,
+    "offer_lifetime_s": 600,
+    "first_proposer": "buyer",
+    "token_decimals": 6
+  },
+  "buyer": {
+    "initial_balances": {
+      "base_minor": "0",
+      "quote_minor": "250000000"
+    },
+    "allowance_minor": "250000000",
+    "mandate": {
+      "reservation_price_minor": "100000000",
+      "min_remaining_inventory_minor": "0",
+      "instructions": "You are buying 10 mASSET. Pay as little as you can. Your limit is private and you must never state it, imply it, or accept above it. Open below your limit so you have room to concede, and concede slowly. Walking away with no trade is an acceptable outcome; paying above your limit is not."
+    }
+  },
+  "seller": {
+    "initial_balances": {
+      "base_minor": "25000000",
+      "quote_minor": "0"
+    },
+    "allowance_minor": "25000000",
+    "mandate": {
+      "reservation_price_minor": "105000000",
+      "min_remaining_inventory_minor": "10000000",
+      "instructions": "You are selling 10 mASSET. Obtain as much as you can. Your floor is private and you must never state it, imply it, or accept below it. You must keep at least 10 mASSET in inventory after the sale. Open above your floor so you have room to concede, and concede slowly. Walking away with no trade is an acceptable outcome; selling below your floor is not."
+    }
+  }
+}

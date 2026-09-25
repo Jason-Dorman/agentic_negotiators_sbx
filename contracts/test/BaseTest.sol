@@ -118,7 +118,7 @@ abstract contract BaseTest is Test {
         address proposer,
         uint256 quoteAmount
     ) internal view returns (INegotiationExchange.Offer memory) {
-        uint64 validUntil = uint64(block.timestamp) + OFFER_LIFETIME;
+        uint64 validUntil = uint64(vm.getBlockTimestamp()) + OFFER_LIFETIME;
         if (validUntil > config.expiresAt) validUntil = config.expiresAt;
         return INegotiationExchange.Offer({
             sessionId: config.sessionId,

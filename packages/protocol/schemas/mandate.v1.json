@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentnegotiation.invalid/schemas/mandate.v1.json",
+  "title": "Party mandate (private)",
+  "description": "docs/data_model.md section 3.4. One party's private negotiating limits. Classified **private experimental input**: a mandate reaches its own agent and nothing else \u2014 not the counterparty, not SSE, not the default export, not a log line (docs/protocol.md section 12, acceptance A12). Stored in plaintext; confidentiality rests on process isolation and repository access control on a trusted host, which ADR-031 states rather than implies.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reservation_price_minor", "min_remaining_inventory_minor", "instructions"],
+  "properties": {
+    "reservation_price_minor": {
+      "description": "The party's own bound on the quote amount, in minor units: a maximum for the buyer, a minimum for the seller. The schema cannot say which, because a mandate does not carry its role; the validator is given the role alongside it.",
+      "$ref": "#/$defs/minorAmount"
+    },
+    "min_remaining_inventory_minor": {
+      "description": "Base-token balance the party will not go below. Zero for a party with no inventory floor.",
+      "$ref": "#/$defs/minorAmount"
+    },
+    "instructions": {
+      "description": "Free-text strategy guidance, appended to the agent's system prompt as its own private guidance. It cannot override protocol rules or the output schema, and the prompt template is what enforces that (ADR-029). May be empty.",
+      "type": "string",
+      "maxLength": 4000
+    },
+    "extra": {
+      "description": "Reserved for later mandate fields, and empty until there are some. `additionalProperties: false` enforces what the reservation means: without it this object is an unconstrained payload inside a schema that observation.v1.json embeds by $ref, so the observation allowlist would accept anything at all one level down. Adding a field here is a schema change, which is the point of the slot.",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "minorAmount": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,77})$"
+    }
+  }
+}

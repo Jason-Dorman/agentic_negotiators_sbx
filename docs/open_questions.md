@@ -2,27 +2,19 @@
 
 Decisions the governance documents could not settle from the spec. Each gets a provisional answer so work can proceed; the product owner confirms or overrides it, and the matching decision-log entry is updated when they do.
 
-Every question raised while producing the governance set has now been answered. The [Resolved](#resolved) table is the record. The reasoning behind the four answers decided on 21 September 2026 after discussion is kept below, because the reasoning is the part that matters when one of them is revisited.
+Every question raised so far has been answered. The [Resolved](#resolved) table is the record. The reasoning behind the answers that needed discussion is kept below, because the reasoning is the part that matters when one of them is revisited.
 
 ## Open
 
-### Q17: should the exchange constructor reject `baseToken == quoteToken`?
-
-**Raised** 22 September 2026, by the adversarial review of the stage 1 contracts. Three of the four review lenses flagged it independently.
-
-**What is true.** `NegotiationExchange`'s constructor checks only that the three addresses are non-zero. Nothing stops a deployment that passes the same token as both legs. Such a session would settle by transferring an amount from buyer to seller and then a different amount from seller to buyer in the same token — a net payment at a price neither party signed, recorded by the events as a normal settlement.
-
-**Why it was not simply fixed.** [protocol.md](protocol.md) section 2 describes two mock tokens as the deployment's topology; it states no constructor precondition, and section 8.3 defines no error for this. Adding a guard means adding an error name to the protocol's error table, which is a protocol change and needs an ADR. The verifiers were right that the code as written diverges from nothing.
-
-**Provisional answer (not implemented).** Add the guard. The cost is one comparison and one error name; the failure it prevents is silent and looks like a successful run in the evidence, which is the failure mode this project is least willing to accept ([architecture.md](architecture.md) goal 4). The counter-argument is real: the deployment script controls both addresses, the setup validator compares them against the manifest, and an operator who wires the same token twice has made a mistake that A17 would catch at deployment time rather than mid-run.
-
-**Touches** if adopted: [protocol.md](protocol.md) sections 2 and 8.3, `INegotiationExchange`, the constructor, one test, and a new ADR.
+None. Q17 was answered by the product owner on 24 September 2026 and is recorded below.
 
 Add new questions here as they arise, with a provisional answer and the documents the answer touches, rather than deciding silently in code.
 
 ---
 
-# Reasoning behind the answers of 21 September 2026
+# Reasoning behind the answers that needed discussion
+
+Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026.
 
 ## Q6: mandate storage at rest
 
@@ -62,6 +54,16 @@ Add new questions here as they arise, with a provisional answer and the document
 
 **On the job-application motivation.** A mainnet `yourname.eth` with a text record pointing at the repository does more for a résumé than Sepolia subnames do, and it is unrelated to this codebase. Treat the two separately.
 
+## Q17: same-token deployment guard
+
+**What was true.** `NegotiationExchange`'s constructor checked only that its three addresses were non-zero. Nothing stopped a deployment that passed the same token as both legs, and such a session would settle by transferring `quoteAmount` from buyer to seller and `baseAmount` back in the same token — a net payment at a price neither party signed, recorded by the seven events as an ordinary settlement.
+
+**Why it was not simply fixed.** [protocol.md](protocol.md) section 2 described two mock tokens as the deployment's topology; it stated no constructor precondition, and section 8.3 defined no error for this. Adding a guard meant adding an error name to the protocol's error table, which is a protocol change and needs an ADR. The verifiers were right that the code as written diverged from nothing.
+
+**Decision (accepted): add the guard.** The counter-argument was weighed rather than dismissed — the deploy script controls both addresses, the setup validator compares them against the manifest, and A17 would catch a mis-wired deployment before any run — but each of those is a procedure and the guard is structural, which is the preference CLAUDE.md states. Recorded as [ADR-037](decision_log.md), which also notes that this is not a protocol *version* bump: an added error is not a type string, a `configHash` encoding, a reason code or an event field, so no digest changes.
+
+**A second guard came free.** The reconstruction tool catches the same mis-wiring from the other direction and after the fact: a manifest whose token pair does not match the chain fails the `configHash` recomputation, because the two token addresses are inside that hash. There is a test for it.
+
 ---
 
 ## Resolved
@@ -84,4 +86,5 @@ Add new questions here as they arise, with a provisional answer and the document
 | Q13 | Coverage thresholds | As proposed: 100 percent lines on `NegotiationExchange`, 100 percent branches on the agent validator and signer, 85 percent lines on the backend. | test_strategy 10 | 21 September 2026 |
 | Q14 | Confirmation threshold on Sepolia | Keep 2, configurable per run and recorded in the export. Reasoning [above](#q14-confirmation-threshold-on-sepolia). | PRD 5, architecture 6 | 21 September 2026 |
 | Q15 | License | Apache-2.0, with a `NOTICE` file. `SPDX-License-Identifier: Apache-2.0` at the top of every Solidity source, in place before stage 1. Reasoning [above](#q15-license). | ADR-032, contributing, build_plan stage 0 | 21 September 2026 |
+| Q17 | Same-token deployment guard | Add the guard: `baseToken == quoteToken` reverts with a new `InvalidTokenPair()` error. The reasoning is in [ADR-037](decision_log.md); the short form is that the cost is one comparison and one error name, while the failure it prevents is silent and appears in the evidence as a successful run. | ADR-037, protocol 2 and 8.3 | 24 September 2026 |
 | Q16 | ENS naming | Adopted, display-only: one Sepolia name with subnames for the exchange and both mock tokens, resolved once at deployment and pinned into the manifest. Nothing resolves ENS at run time. Reasoning [above](#q16-ens-naming). | ADR-030, api_contract deployments, data_model 3.2, PRD FR-U10, test_strategy A17, build_plan stage 5 | 21 September 2026 |

@@ -21,6 +21,10 @@ dev = [
     "mypy>=1.18",
     "import-linter>=2.3",
     "pre-commit>=4.3",
+    # `mypy --strict` with `disallow_any_unimported` treats an unstubbed import as an error, which
+    # is the point: a validator whose return type is Any checks nothing as far as the type checker
+    # is concerned.
+    "types-jsonschema>=4.23",
 ]
 # Repository scripts (key generation, secret scan) that are not part of any service.
 tooling = [
@@ -65,7 +69,10 @@ max-complexity = 9
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S", "T20"]
+# Command-line entry points. `print` is their output, not a stray debug statement: these are run by
+# a developer or by CI and their result is what the terminal shows.
 "infra/scripts/*" = ["T20"]
+"packages/protocol/tools/*" = ["T20"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -82,7 +89,13 @@ disallow_any_unimported = true
 # A `type: ignore` must name its reason (docs/contributing.md 2.1); this keeps stale ones visible.
 warn_unused_ignores = true
 show_error_codes = true
-mypy_path = ["services/api/src", "services/agent/src", "packages/protocol/src", "infra/scripts"]
+mypy_path = [
+    "services/api/src",
+    "services/agent/src",
+    "packages/protocol/src",
+    "infra/scripts",
+    "packages/protocol/tools",
+]
 exclude = ["contracts/lib/", "apps/web/"]
 
 # --------------------------------------------------------------------------------------
@@ -98,7 +111,9 @@ testpaths = [
     "infra/scripts/tests",
 ]
 addopts = "-ra --strict-markers --strict-config"
-pythonpath = ["infra/scripts"]
+# `infra/scripts` and `packages/protocol/tools` hold command-line scripts rather than importable
+# packages (ADR-034), so pytest needs them on the path to test them at all.
+pythonpath = ["infra/scripts", "packages/protocol/tools"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [

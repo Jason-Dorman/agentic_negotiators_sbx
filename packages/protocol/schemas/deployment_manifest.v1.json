@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentnegotiation.invalid/schemas/deployment_manifest.v1.json",
+  "title": "Deployment manifest",
+  "description": "docs/data_model.md section 3.2, ADR-038. Written by `contracts/script/Deploy.s.sol`, one file per deployment under `docs/deployments/`.\n\nThis file is the identity of a deployment. The setup validator compares a live chain against it and refuses a run on a mismatch (`422 deployment_mismatch`); the indexer takes its address and start block from it; the reconstruction tool needs this file and an RPC URL and nothing else (acceptance A15); A17 is the check that the explorer, the manifest and the chain agree.\n\n`ens` is display metadata, resolved once at registration and pinned here beside the address it resolved to. **No identity check reads it** (ADR-030): a name is mutable state owned by whoever holds the registration, and canonical chain events are the only source of economic outcome.\n\nLocal manifests are git-ignored because the chain they describe lives only as long as the container. Sepolia manifests are committed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "deployment_id",
+    "protocol_version",
+    "chain_id",
+    "exchange_address",
+    "base_token_address",
+    "quote_token_address",
+    "operator_address",
+    "relay_address",
+    "token_decimals",
+    "code_hashes",
+    "compiler",
+    "start_block",
+    "deployed_at_ts",
+    "explorer_base_url",
+    "ens"
+  ],
+  "properties": {
+    "manifest_version": {
+      "description": "The shape of this file, independent of the protocol version: a new optional manifest field is not a new protocol.",
+      "const": "1"
+    },
+    "deployment_id": {
+      "description": "Names the file. By convention `<profile>-<date>-<nn>`, e.g. `local-2026-09-24-01`.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 64
+    },
+    "protocol_version": {
+      "description": "docs/protocol.md section 15. A change to a type string, the configHash encoding, a reason code or an event field bumps this and requires a new deployment.",
+      "const": "1"
+    },
+    "chain_id": { "type": "integer", "minimum": 1 },
+    "exchange_address": { "$ref": "#/$defs/address" },
+    "base_token_address": { "$ref": "#/$defs/address" },
+    "quote_token_address": { "$ref": "#/$defs/address" },
+    "operator_address": {
+      "description": "The immutable operator of the exchange and both tokens. The only address that may create or abort a session, or mint.",
+      "$ref": "#/$defs/address"
+    },
+    "relay_address": {
+      "description": "The gas payer. Recorded so an observer can see that it holds no trading authority: it appears as the sender of every transaction and as the signer of none (docs/protocol.md section 1).",
+      "$ref": "#/$defs/address"
+    },
+    "token_decimals": { "type": "integer", "const": 6 },
+    "code_hashes": {
+      "description": "keccak256 of each contract's deployed runtime bytecode, which is what the validator can read back from a live chain with `eth_getCode`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exchange", "base_token", "quote_token"],
+      "properties": {
+        "exchange": { "$ref": "#/$defs/digest" },
+        "base_token": { "$ref": "#/$defs/digest" },
+        "quote_token": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "compiler": {
+      "description": "Copied out of the Foundry build artefact, not restated, so the manifest cannot claim settings the bytecode was not built with (ADR-033).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["solc", "optimizer", "runs", "evm_version", "bytecode_hash"],
+      "properties": {
+        "solc": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+" },
+        "optimizer": { "type": "boolean" },
+        "runs": { "type": "integer", "minimum": 0 },
+        "evm_version": { "type": "string" },
+        "bytecode_hash": { "type": "string" }
+      }
+    },
+    "start_block": {
+      "description": "The earliest block that can hold an event from this deployment, and the block the indexer and the reconstruction tool start their log scan from; without it, reconstruction would have to scan from genesis. It is the chain head the deploy script observed, which is at or immediately before the block the deployment transactions landed in — a `forge script` simulates against the head and broadcasts afterwards. A lower bound is what a scan needs, and it is the only figure the script can state honestly.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "deployed_at_ts": {
+      "description": "The timestamp, in Unix seconds, of the block the deploy script observed — chain time, not the deploying machine's clock, and within one block of the deployment itself for the same reason `start_block` is a lower bound. Chain time is authoritative everywhere else in this system (docs/protocol.md section 6); a manifest that recorded wall-clock time would be the one place it was not, and the discrepancy would be invisible. The backend renders its `TIMESTAMPTZ` column from this value.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "explorer_base_url": {
+      "description": "`https://sepolia.etherscan.io` for chain 11155111, null for a local chain, which has no explorer. Null is written explicitly: an absent explorer is a fact about the deployment, not a missing field.",
+      "type": ["string", "null"],
+      "format": "uri"
+    },
+    "ens": {
+      "description": "Display names only, resolved once at registration. Null where the chain has no ENS deployment or no names were registered; a deployment ships without names rather than waiting for them (ADR-030).",
+      "oneOf": [{ "$ref": "#/$defs/ens" }, { "type": "null" }]
+    }
+  },
+  "$defs": {
+    "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+    "digest": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+    "ens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "exchange", "base_token", "quote_token", "resolved_at"],
+      "properties": {
+        "root": { "type": "string" },
+        "exchange": { "type": "string" },
+        "base_token": { "type": "string" },
+        "quote_token": { "type": "string" },
+        "resolved_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

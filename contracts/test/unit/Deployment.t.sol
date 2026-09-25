@@ -42,6 +42,16 @@ contract DeploymentTest is Test {
         new NegotiationExchange(address(baseToken), address(quoteToken), address(0));
     }
 
+    /// @dev Q17, ADR-037. A same-token deployment would settle by moving `quoteAmount` from
+    ///      buyer to seller and `baseAmount` back in the *same* token — a net payment at a price
+    ///      neither party signed, which the event log records as an ordinary settlement. The
+    ///      failure is silent and looks like a successful run in the evidence, so the
+    ///      constructor refuses it rather than leaving the deploy script as the only guard.
+    function test_a_same_token_pair_is_rejected() public {
+        vm.expectRevert(INegotiationExchange.InvalidTokenPair.selector);
+        new NegotiationExchange(address(baseToken), address(baseToken), operator);
+    }
+
     function test_a_correctly_wired_deployment_exposes_its_immutables() public {
         NegotiationExchange exchange =
             new NegotiationExchange(address(baseToken), address(quoteToken), operator);

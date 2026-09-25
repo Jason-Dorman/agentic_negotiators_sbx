@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentnegotiation.invalid/schemas/scenario.v1.json",
+  "title": "Scenario template",
+  "description": "docs/data_model.md section 3.1, ADR-022. A manufactured negotiation to run, as JSON. Every file in `scenarios/` validates against this in CI.\n\nThe file holds both mandates, so a scenario file is **private experimental input** as a whole: `GET /v1/scenarios` lists only the public fields and `GET /v1/scenarios/{id}` requires the observer reveal header. Nothing here describes a real asset, a real counterparty or a real price.\n\n`confirmation_threshold` is deliberately absent. It is a property of the chain a run executes on — 1 locally, 2 on Sepolia (ADR/Q14) — not of the economics being tested, and a scenario that carried one would silently change the meaning of a run moved between profiles.\n\nFeasibility is also absent, and no field implies it. Whether the two mandates overlap is computed by the evaluator alone and is never exposed on a setup route (docs/api_contract.md section 2.1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "name",
+    "description",
+    "public_config",
+    "buyer",
+    "seller"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "scenario_id": {
+      "description": "Stable identifier, upserted on startup. Changing it creates a second scenario rather than editing the first, which is what keeps earlier runs' provenance readable.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 64
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "public_config": { "$ref": "#/$defs/publicConfig" },
+    "buyer": { "$ref": "#/$defs/partyTemplate" },
+    "seller": { "$ref": "#/$defs/partyTemplate" }
+  },
+  "$defs": {
+    "minorAmount": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,77})$" },
+    "positiveMinorAmount": { "type": "string", "pattern": "^[1-9][0-9]{0,77}$" },
+    "publicConfig": {
+      "description": "Everything both agents may see. These values reach the observation; the party templates do not, except each party's own.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_amount_minor",
+        "max_offers",
+        "session_duration_s",
+        "offer_lifetime_s",
+        "first_proposer",
+        "token_decimals"
+      ],
+      "properties": {
+        "base_amount_minor": {
+          "description": "The fixed quantity of mASSET. Fixed quantity is what makes this a price-only negotiation (ADR-001).",
+          "$ref": "#/$defs/positiveMinorAmount"
+        },
+        "max_offers": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "session_duration_s": { "type": "integer", "minimum": 1 },
+        "offer_lifetime_s": {
+          "description": "Upper bound on an offer's life; the signer caps it at session expiry (docs/protocol.md section 6).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "first_proposer": {
+          "description": "Buyer only in v0.1. The contract enforces it, so any other value would be refused on-chain rather than producing a different negotiation.",
+          "const": "buyer"
+        },
+        "token_decimals": { "type": "integer", "const": 6 }
+      }
+    },
+    "partyTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initial_balances", "allowance_minor", "mandate"],
+      "properties": {
+        "initial_balances": {
+          "description": "Standardised across scenarios and deliberately not equal to the reservation price. A public balance still reveals financial capacity, as it would on any public ledger, but it must not reveal the private bound (system spec section 2.3).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["base_minor", "quote_minor"],
+          "properties": {
+            "base_minor": { "$ref": "#/$defs/minorAmount" },
+            "quote_minor": { "$ref": "#/$defs/minorAmount" }
+          }
+        },
+        "allowance_minor": {
+          "description": "Allowance granted to the exchange during setup. The exchange can move no more than this, whatever is signed.",
+          "$ref": "#/$defs/minorAmount"
+        },
+        "mandate": { "$ref": "mandate.v1.json" }
+      }
+    }
+  }
+}

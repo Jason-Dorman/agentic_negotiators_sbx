@@ -75,9 +75,31 @@ One row per deployment manifest.
 | `explorer_base_url` | `TEXT NULL` | |
 | `ens` | `JSONB NULL` | display names resolved once at deploy time: `{ "root": "…", "exchange": "…", "base_token": "…", "quote_token": "…", "resolved_at": "…" }`. Null where the chain has no ENS deployment or no names were registered. Never read by any identity check ([ADR-030](decision_log.md)) |
 | `manifest` | `JSONB NOT NULL` | full manifest as written by the deploy script |
-| `deployed_at` | `TIMESTAMPTZ NOT NULL` | |
+| `start_block` | `BIGINT NOT NULL` | earliest block that can hold an event from this deployment; the indexer and the reconstruction tool scan from here |
+| `deployed_at` | `TIMESTAMPTZ NOT NULL` | rendered from the manifest's `deployed_at_ts` |
 
 Unique: `(chain_id, exchange_address)`.
+
+The manifest file is written by `contracts/script/Deploy.s.sol`, lives at
+`docs/deployments/<deployment_id>.json`, and validates against
+`packages/protocol/schemas/deployment_manifest.v1.json`. Three of its fields do not map one-to-one
+onto the columns above, and [ADR-038](decision_log.md) has the reasoning:
+
+- **`deployed_at_ts`, integer chain seconds**, is what the file records; `deployed_at` above is
+  rendered from it. Chain time is authoritative everywhere else in this system
+  ([protocol.md](protocol.md) section 6), and a manifest carrying the deploying machine's clock
+  would be the one place it was not.
+- **`start_block` is a lower bound**, not the deployment block. A `forge script` simulates against
+  the current head and broadcasts afterwards, so the figure it can state is the head before the
+  deployment transactions land. That is what a log scan needs; naming it `deployed_at_block` would
+  have claimed a precision it does not have.
+- **`explorer_base_url` and `ens` are written as explicit JSON `null`** when absent, never omitted.
+  A consumer that reads a missing key as null cannot tell "this chain has no explorer" from "an
+  older script did not write this field".
+
+`manifest_version` versions the file's shape independently of `protocol_version`, because a new
+optional manifest field is not a new protocol. Local manifests are git-ignored; Sepolia manifests
+are committed.
 
 ### 3.3 `runs`
 
@@ -124,7 +146,7 @@ Constraint: `outcome_kind <> 'pending'` implies `state = 'terminal'` and `outcom
 | `reservation_price_minor` | `NUMERIC(78,0) NOT NULL` | |
 | `min_remaining_inventory_minor` | `NUMERIC(78,0) NOT NULL` | |
 | `instructions` | `TEXT NOT NULL` | free-text strategy guidance |
-| `extra` | `JSONB` | future fields, schema-validated |
+| `extra` | `JSONB` | reserved for future fields, and schema-validated as **empty**: `mandate.v1.json` sets `additionalProperties: false`, because `observation.v1.json` embeds the mandate by `$ref` and an open object here would be an unconstrained payload inside the agent's allowlist. Adding a field is a schema change, which is the point of the slot |
 | `mandate_hash` | `TEXT NOT NULL` | sha256 of canonical JSON, recorded in `decisions.observation_hash` inputs |
 
 Unique: `(run_id, party)`. Rows are immutable after insert (trigger raises on `UPDATE`).

@@ -203,6 +203,15 @@ Entries ADR-001 to ADR-010 restate spec Appendix B. Entries from ADR-011 are dec
 | Solidity | 0.8.28, `evm_version = "cancun"` | `contracts/foundry.toml` | — |
 | PostgreSQL | 16.15-alpine | `infra/compose.local.yaml` | 16.15 on the 16 line |
 
+**Added in stage 1**, for the cross-language digest check and the reconstruction tool. Licenses recorded here because a reviewer has to see a dependency arrive in order to check one ([contributing.md](contributing.md) section 1).
+
+| Component | Pin | Where | License | Why |
+|---|---|---|---|---|
+| viem | 2.56.8 | `packages/protocol/devDependencies` | MIT | The TypeScript EIP-712 implementation in the three-language fixture check. [test_strategy.md](test_strategy.md) section 5 leaves the choice between viem and ethers to the implementer; viem was taken for being tree-shakeable and for typing `hashTypedData` against the type definitions rather than against a loose object. A dev dependency only: the web client never signs ([contributing.md](contributing.md) section 2.2), it verifies. |
+| eth-abi | 6.0.0 | `negotiation-protocol` | MIT | `abi.encode` in Python, for `configHash` and the three struct hashes. Already present transitively via `eth-account`; declared because it is imported directly. |
+| referencing | 0.37.0 | `negotiation-protocol` | MIT | The JSON Schema files cross-reference each other by file name, which needs an explicit registry rather than jsonschema's default resolver. Also already present via `jsonschema`. |
+| types-jsonschema | 4.26 | root `dev` group | Apache-2.0 | `mypy --strict` with `disallow_any_unimported` treats an unstubbed import as an error, which is the point: a validator whose return type is `Any` checks nothing as far as the type checker is concerned. |
+
 **Two pins sit behind the newest major. Each is a reproduced incompatibility, not a policy of caution.**
 
 - **pnpm 11.27.1, not 12.5.1.** Reproduced on Node 22.20.0 with its bundled Corepack 0.34.0: `corepack prepare pnpm@12.5.1 --activate` downloads the package, then `pnpm --version` exits non-zero with `Error: Cannot find module '~/.cache/node/corepack/v1/pnpm/12.5.1/bin/pnpm.cjs'`. The unpacked 12.5.1 tree contains `bin/pnpm.mjs` and no `bin/pnpm.cjs`; Corepack 0.34.0 resolves the `.cjs` path. pnpm 11.27.1 and 10.34.5 were both checked and both ship `bin/pnpm.cjs`. Pinning 11.27.1 keeps `corepack enable pnpm` as the entire setup step locally and in CI, with no second installer to hold in step. This is a statement about these two versions on this Node line, not about pnpm 12 generally; revisit when the Corepack bundled with the supported Node LTS can activate it.
@@ -245,3 +254,38 @@ The reason to keep it rather than lean on the gitlinks is legibility in review. 
 The container port stays 5432 and is not configurable. Everything inside the Compose network reaches the database at `postgres:5432` — the service name and the container port. `POSTGRES_PORT` moves the published host side only, and no application code reads it, so a developer may use 5432, 55432 or any free port without a code change. The same host-port versus service-name rule applies to Anvil (`anvil:8545`).
 **Rationale:** A failure to connect is a good failure; connecting to the wrong database is a bad one, and the default port under a default name is how the second happens. Naming the database and role for the project rather than `postgres` means a stray connection to the wrong server is refused rather than served. Binding the host port to a non-default value by default makes the documented start-up command work on a machine that already runs PostgreSQL, which is most machines.
 **Consequences:** `infra/.env.example` carries a host URL and a container URL and says which caller uses which; [runbook.md](runbook.md) section 2 documents the distinction, how to change the host port, and what the port-conflict error means. `make reset-db` destroys `agent_negotiation_postgres_data` and nothing else. Renaming the Compose project, the database or the role on an existing installation orphans the old volume rather than renaming it, so a rename is a reset and the runbook says so.
+
+## ADR-037: The exchange constructor rejects a same-token deployment
+**Status:** accepted (Q17, answered by the product owner, 24 September 2026)
+**Context:** The stage 1 adversarial review found that `NegotiationExchange`'s constructor checked only that its three addresses were non-zero. Nothing stopped a deployment that passed the same token as both legs. Such a session would settle by transferring `quoteAmount` from buyer to seller and `baseAmount` back in the same token — a net payment at a price neither party signed — and the seven events would record it as an ordinary settlement. Three of the review's four lenses flagged it independently. It was not fixed on the spot because [protocol.md](protocol.md) section 2 stated no constructor precondition and section 8.3 defined no error for it, so adding a guard meant adding a name to the protocol's error table, which needs a decision.
+**Decision:** Add the guard. `baseToken == quoteToken` reverts with a new error `InvalidTokenPair()`. [protocol.md](protocol.md) sections 2 and 8.3, `INegotiationExchange`, the constructor, one unit test and one fuzz property change together.
+**Rationale:** The cost is one comparison and one error name. The failure it prevents is silent and looks like a successful run in the evidence, which is the failure mode this project is least willing to accept ([architecture.md](architecture.md) goal 4). The counter-argument was real and was weighed: the deploy script controls both addresses, the stage 2 setup validator compares them against the manifest, and A17 would catch a mis-wired deployment before any run. But each of those is a procedure, and the guard is structural — the preference stated in CLAUDE.md is for the structural one.
+**Consequences:** The error table has 23 entries rather than 22, and `packages/protocol/tests/test_abi.py` asserts all of them. This is not a protocol *version* bump: [protocol.md](protocol.md) section 15 bumps the version for a change to a type string, the `configHash` encoding, a reason code or an event field, and an added error is none of those. No digest changes and no signature made before the change becomes invalid. The reconstruction tool catches the same mis-wiring after the fact, from the other direction: a manifest whose token pair does not match the chain fails the `configHash` recomputation, and there is a test for that.
+
+## ADR-038: The deployment manifest, and what it can honestly claim
+**Status:** accepted (directed by the product owner, 24 September 2026)
+**Context:** Stage 1 owed a deployment script that writes the manifest. [data_model.md](data_model.md) section 3.2 and [api_contract.md](api_contract.md) section 2.1 describe the manifest's contents, but three questions were open once it came to writing one: where a manifest lives and whether it is committed, what a Solidity script can truthfully state about when a deployment happened, and how a consumer tells "no explorer" from "field not written".
+**Decision:** Four parts.
+
+| | |
+|---|---|
+| Location | `docs/deployments/<deployment_id>.json`, written by `contracts/script/Deploy.s.sol` |
+| Committed | Sepolia manifests yes; local ones git-ignored by `docs/deployments/local-*.json` |
+| Time and block | `deployed_at_ts` (chain seconds) and `start_block`, replacing a formatted `deployed_at` |
+| Absent values | Written as explicit JSON `null`, never omitted |
+
+The schema is `packages/protocol/schemas/deployment_manifest.v1.json`, and the manifest carries its own `manifest_version` alongside `protocol_version`.
+**Rationale, part by part.**
+
+*Local manifests are not committed.* An Anvil chain lives as long as its container, so a committed local manifest is a record of addresses on a chain that no longer exists — evidence of nothing, and churn on every redeploy. Sepolia manifests are the ones an observer can check, and stage 5 commits them.
+
+*`deployed_at_ts` rather than `deployed_at`.* Chain time is authoritative everywhere else in this system ([protocol.md](protocol.md) section 6). A manifest whose timestamp came from the clock of the machine that ran the script would be the single place it was not, and the discrepancy would be invisible. Recording integer chain seconds also removes a date-formatting routine from Solidity, which would have needed its own tests to earn any trust. The backend renders its `TIMESTAMPTZ` column from this value, so the API response shape does not change.
+
+*`start_block` rather than `deployed_at_block`.* A `forge script` simulates against the current head and broadcasts afterwards, so `block.number` inside the script is the head *before* the deployment transactions land. Naming the field `deployed_at_block` would have claimed a precision it does not have: measured on a fresh Anvil, it reads 0 while all three contracts land in the next block. A lower bound is exactly what a log scan needs, and it is the only figure the script can state honestly, so the field is named for that.
+
+*Explicit nulls.* A consumer that reads a missing key as null cannot distinguish "this chain has no explorer" from "an older script did not write this field". The first is a fact about the deployment and belongs in the file.
+**Two preconditions, both checked before anything is broadcast** (added after the stage 1 adversarial review). The script refuses a `DEPLOYMENT_ID` that would not satisfy the schema's own `^[a-z0-9]+(-[a-z0-9]+)*$` pattern, and refuses to write over an existing manifest unless `MANIFEST_OVERWRITE=true` says so. Both were failures of the same kind: a deployment that lands on chain and then cannot be recorded, or that silently replaces the record of an earlier one. Checking after the fact is no use, because the gas is already spent and, on Sepolia, the manifest being overwritten is committed evidence.
+
+A third case cannot be prevented from inside the script and so is documented instead: `_writeManifest` runs during simulation, before Foundry broadcasts, so **a failed broadcast leaves a manifest describing a deployment that never landed**. The script says so on its own output, and [runbook.md](runbook.md) section 4 says to delete the file.
+
+**Consequences:** `contracts/foundry.toml` grants write access to `../docs/deployments` and read access to `../packages/protocol/fixtures`. The reconstruction tool and the stage 2 indexer take their log-scan start from `start_block`. `vm.serializeJson` cannot be used to compose the manifest — it *sets* an object's contents rather than adding to them, which silently reduced the first version of the file to a single key — so nested objects and nulls are written by key with `vm.writeJson(value, path, ".key")`. The integration test that deploys for real is what caught that, and it is why the reconstruction tests drive a real chain rather than a fake.
