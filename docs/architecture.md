@@ -146,7 +146,7 @@ One codebase, two runtime instances (A and B) configured with role, mandate acce
 | `budget/` | Pre-call check against call ceiling and spend ceiling using conservative token bound and price table |
 | `validation/` | `MandateValidator`: structural then economic validation, producing private feedback |
 | `signing/` | Construct EIP-712 message from validated state and sign with the party key |
-| `keys/` | Load key from environment or keystore; expose sign only |
+| `keys/` | Load the instance's root secret from environment or keystore, derive each run's key from it ([ADR-039](decision_log.md)); expose sign only |
 | `state/` | Run-scoped in-memory record of approved config and prior own decisions, backed by the controller's provisioning call |
 
 The service has no database connection and no RPC connection. Its only outbound network dependency is the model provider, and only for `ModelPolicy`. The mandate reaches it once at provisioning, as a `keystore:` or `env:` key ref plus mandate values; it never reaches the other instance.
@@ -157,7 +157,7 @@ Foundry project: `MockERC20` (two deployments), `NegotiationExchange`. OpenZeppe
 
 ### 3.5 Protocol package (`packages/protocol/`)
 
-JSON schemas (observation, agent decision, mandate, scenario, export), ABI artifacts, EIP-712 fixtures with known digests, reason-code tables, and the reconstruction tool. Python and TypeScript packages are generated or checked from these so field names align across languages.
+JSON schemas (observation, agent decision, mandate, scenario, export), ABI artifacts, EIP-712 fixtures with known digests, reason-code tables, and the reconstruction tool. Python and TypeScript packages are generated or checked from these so field names align across languages. The Python package also holds what both services must agree on byte for byte: the value objects (`MinorAmount`, `Address`, `Digest`, `SessionId`, `Sequence`) and the one canonical-JSON hash behind `observation_hash`, `mandate_hash` and `request_hash`.
 
 ### 3.6 Batch evaluator
 
@@ -197,16 +197,24 @@ sequenceDiagram
     participant AB as Agent B
     participant CH as Chain
     UI->>API: POST /runs (scenario, policies, mandates)
-    API->>API: persist run, mandate_versions, wallets
-    API->>AA: provision(run_id, role=buyer, mandate_A, key ref)
-    API->>AB: provision(run_id, role=seller, mandate_B, key ref)
+    API->>API: persist run, mandate_versions
+    API->>AA: provision(run_id, role=buyer, mandate_A, root key ref)
+    AA-->>API: derived address (ADR-039)
+    API->>AB: provision(run_id, role=seller, mandate_B, root key ref)
+    AB-->>API: derived address (ADR-039)
+    API->>API: persist wallets (address, derivation metadata)
     UI->>API: POST /runs/{id}/validate
     API->>CH: chain id, code hashes, balances, allowances
     API->>AA: health + model availability
     API->>AB: health + model availability
     API-->>UI: validation report
     UI->>API: POST /runs/{id}/start
-    API->>CH: fund wallets, approve exchange (participant-signed setup txs)
+    API->>CH: fund ETH, mint balances (operator key)
+    API->>AA: setup-approval (nonce, fee caps)
+    AA-->>API: signed approve tx (ADR-040)
+    API->>AB: setup-approval (nonce, fee caps)
+    AB-->>API: signed approve tx (ADR-040)
+    API->>CH: broadcast both approvals
     API->>CH: createSession(config) (operator key)
     CH-->>API: SessionOpened
     API->>AA: approve_session(SessionOpened fields)
@@ -217,6 +225,8 @@ sequenceDiagram
 ```
 
 Mandates are sent to an agent service once, at provisioning. The backend never includes them in any later message.
+
+The participant wallets are fresh per run because their keys are derived per run inside each agent service ([ADR-039](decision_log.md)); the backend learns each address from the provisioning response and stores it with the derivation metadata. The two ERC-20 approvals are built and signed by the agents themselves from provisioned state and only broadcast by the backend ([ADR-040](decision_log.md)).
 
 ### 5.2 One turn (spec 9.2)
 

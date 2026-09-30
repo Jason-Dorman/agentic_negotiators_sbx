@@ -225,6 +225,7 @@ not list, inside the schema that declares itself that section's exhaustive form.
 
 ## 7. Backend tests
 
+- Persistence (stage 2.1), against a real PostgreSQL: the migrated schema against a hand transcription of [data_model.md](data_model.md) sections 3, 4 and 8 — tables, column types and nullability, enum values in order, unique constraints, check-constraint names, triggers; the migration against the models by Alembic's autogenerate comparison; a downgrade that leaves no table, enum type or function behind; every refusal the schema exists for, asserted by constraint name, each beside the legitimate neighbour it must still allow; and the repositories' own guarantees — canonical rows only, gapless run-event cursors and non-repeating relay nonces under concurrent writers, a lease that survives a takeover with its nonce.
 - Controller state machine: every transition in [architecture.md](architecture.md) section 6.1, including illegal transitions returning `invalid_state`.
 - Idempotency: same key same body replays; same key different body conflicts.
 - Turn executor with fake agent client and fake chain: the eight steps of spec 9.2 in order; persist-before-broadcast asserted by injecting a crash between them.
@@ -262,7 +263,8 @@ Live model runs are not deterministic and are not CI gates. They are **recorded 
 | Web unit | merge |
 | Playwright E2E | merge to main |
 | Gas snapshot regression | merge, override by decision-log entry |
-| Coverage: contracts 100 percent lines on `NegotiationExchange` (live from stage 1); agent validator and signer 100 percent branches, backend 85 percent lines (stage 2) | merge |
+| Coverage: contracts 100 percent lines on `NegotiationExchange` (live from stage 1); backend 85 percent lines (live from stage 2.1); agent validator and signer 100 percent branches (stage 2.2) | merge |
+| Import boundaries (`lint-imports`, the contracts in `.importlinter`) | merge (live from stage 2.1) |
 | Protocol artefacts match their generators: committed ABIs and the EIP-712 fixture | merge |
 
 `make ci` runs **every** gate in this table that exists yet, including the gas snapshot and the
@@ -283,7 +285,14 @@ would hand the step `tee`'s exit status.
 The contract half of the coverage gate is enforced from stage 1, when the contract exists, and
 checks all four figures `forge coverage` reports — lines, statements, branches and functions — at
 100 percent rather than lines alone. The other two thresholds are turned on with the code they
-measure.
+measure: the backend's from stage 2.1, the agent's in stage 2.2. The Python assertion is
+`infra/scripts/check_python_coverage.py`, tested like the contract one, and a rule whose glob matches
+no file fails rather than passing over nothing — the coverage version of `all([])`.
+
+**Integration tests fail in CI rather than skipping.** Locally, a Python integration test skips with
+its reason when PostgreSQL or Anvil is absent. CI and `make ci` set `REQUIRE_INTEGRATION=1`, which
+turns the PostgreSQL skip into a failure, so the Python gate cannot go green without having run its
+database suite.
 
 The coverage thresholds were confirmed by the product owner on 21 September 2026. They are deliberately uneven: the contract and the two components that convert a model's words into authority are the places where a missed branch is an incorrect transfer, while the backend's remaining 15 percent is mostly error plumbing that integration tests exercise end to end.
 

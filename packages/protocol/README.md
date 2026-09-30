@@ -10,7 +10,7 @@ TypeScript and Solidity so that a field renamed in one language fails the build 
 | `abi/` | ABI artefacts, **generated** from the Foundry build by `tools/export_abi.py` |
 | `fixtures/` | The EIP-712 digest fixture (**generated**) and the reason-code table |
 | `tools/` | The two generators, and `reconstruct.py`, which reads chain data only (A15) |
-| `src/negotiation_protocol/` | Python package |
+| `src/negotiation_protocol/` | Python package, including the value objects and canonical hashing both services share |
 | `src/index.ts` | TypeScript package (`@negotiation/protocol`) |
 | `tests/` | Fixture tests run by pytest and Vitest; the Solidity third lives in `contracts/test/unit/Fixtures.t.sol` |
 
@@ -62,6 +62,26 @@ amount, a raw model response in the public decision records.
 The schemas cross-reference each other by file name (`mandate.v1.json`, not an absolute `$id`), so a
 consumer loading them from disk needs a registry rather than a default resolver. `resources.py`
 builds one; `validate(instance, "observation.v1.json")` is the whole Python API.
+
+## Value objects and canonical hashing
+
+Two small modules both services depend on, added in stage 2.1.
+
+**`values.py`**: `MinorAmount`, `Address`, `Digest`, `SessionId` and `Sequence`, the domain
+primitives [contributing.md](../../docs/contributing.md) section 2.1 says never cross a module
+boundary as a bare `int` or `str`. Each subclasses the primitive it wraps, so web3, eth-abi,
+SQLAlchemy and JSON take it without unwrapping, and each validates on construction: an amount is in
+`uint256`, a sequence in `uint64`, an address is EIP-55 checksummed (a mixed-case address with a
+broken checksum is refused as the typo it is), a digest is lowercase. Their Pydantic hooks keep the
+JSON rule of [api_contract.md](../../docs/api_contract.md) section 1: in JSON an amount is a
+base-10 string, and a JSON number is a validation error.
+
+**`hashing.py`**: `canonical_json` and `json_sha256`, the one definition of `observation_hash`,
+`mandate_hash` and `request_hash`. Both services record these hashes about the same documents, so
+two private definitions would agree only until one sorted keys and the other did not. Canonical
+means sorted keys, no insignificant whitespace, UTF-8 rather than `\u` escapes, and no floats at
+all: every number these documents carry is an integer or a string by design, so a float is refused
+rather than formatted.
 
 ## The reconstruction tool
 

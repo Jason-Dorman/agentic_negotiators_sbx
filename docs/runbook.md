@@ -13,11 +13,11 @@ has actually exercised; nothing is written ahead of the code that makes it true.
 | Section | Available from |
 |---|---|
 | 1. Local startup | Stage 0 |
-| 2. Database isolation and the ports | Stage 0 |
-| 3. Keys and secrets | Stage 0 (generation); stage 2 (loading) |
+| 2. Database isolation and the ports; applying the schema; the integration suite | Stage 0; stage 2.1 |
+| 3. Keys and secrets | Stage 0 (generation); stage 2.2 (loading) |
 | 4. Deploying the contracts and reading the manifest | Stage 1 |
 | 5. Reconstructing a session from chain data | Stage 1 |
-| 6. Recovering pending transactions | Stage 2 |
+| 6. Recovering pending transactions | Stages 2.3 and 2.4 |
 | 7. Funding a testnet demonstration | Stage 5 |
 | 8. Replay and export | Stages 4 and 5 |
 
@@ -129,6 +129,46 @@ project's volume. Renaming `POSTGRES_DB`, `POSTGRES_USER` or the Compose project
 existing installation has the same practical effect — the volume still holds the old database —
 so treat a rename as a reset.
 
+### Applying the schema — stage 2.1
+
+The migrations ship inside the backend package, so applying them needs the installed package and a
+URL and nothing else:
+
+```sh
+make migrate                                     # uses DATABASE_URL from infra/.env
+DATABASE_URL=postgresql+asyncpg://… uv run python -m api.db.migrate upgrade
+uv run python -m api.db.migrate downgrade base   # removes every table, enum and function
+```
+
+The local profile will run `upgrade` automatically when the backend starts (stage 2.5); on a Sepolia
+host it is this command, run by hand, before the backend starts ([data_model.md](data_model.md)
+section 8). Without `DATABASE_URL` the command refuses and exits 2 rather than guessing a database.
+
+The `Makefile` reads `DATABASE_URL` and `TEST_DATABASE_URL` from `infra/.env` when that file exists,
+and nothing else from it.
+
+### Running the integration suite
+
+The integration tests migrate and use the `agent_negotiation_test` database that
+`infra/postgres/init` creates the first time the volume is initialised. `make up` first:
+
+```sh
+make up
+uv run pytest services/api/tests/integration     # skips, with the reason, if PostgreSQL is down
+make ci                                          # fails instead: it sets REQUIRE_INTEGRATION=1
+```
+
+**A skip is a local convenience, never a pass.** Without PostgreSQL a plain `pytest` skips the
+integration suite and says why; CI and `make ci` set `REQUIRE_INTEGRATION=1`, which turns the same
+absence into a failure, because a gate that skips reports green without having run.
+
+The suite reaches the database at `TEST_DATABASE_URL`, defaulting to the Compose defaults (role,
+password and database `agent_negotiation`, host port 55432, database `agent_negotiation_test`). If
+you copied `infra/.env.example` *before* the volume was first created, the password is the one in
+that file; set `TEST_DATABASE_URL` to match, or run `make reset-db` and start again. The migration
+round-trip test also creates and drops a scratch database, `agent_negotiation_migrations_scratch`,
+which needs a role allowed to `CREATE DATABASE` — the Compose role is.
+
 ---
 
 ## 3. Keys and secrets
@@ -155,8 +195,13 @@ addresses and `keystore:` references and never prints a private key.
 ### Loading keys — stage 2
 
 Runtime loading is the `KeyHolder` in `services/agent/src/agent/keys/`, which arrives with the
-agent service in stage 2 ([ADR-023](decision_log.md)). Both reference forms resolve through it:
+agent service in stage 2.2 ([ADR-023](decision_log.md)). Both reference forms resolve through it:
 `env:NAME` reads the variable, `keystore:/path` decrypts the file with `KEYSTORE_PASSWORD`.
+
+For the two participants, what a reference resolves to is a **root** secret, not a trading key
+([ADR-039](decision_log.md)): each agent derives a fresh key for every run from its root, the chain
+ID, its role and the run ID, and reports only the address. The procedure — including what
+`generate_keys.py` emits for roots — lands with the key holder in stage 2.2.
 
 The boundary it has to hold, from stage 2 onwards and unchanged by anything later:
 
@@ -331,8 +376,8 @@ they are tells you where to look.
 
 ## 6. Recovering pending transactions
 
-Stage 2. The procedure lands in the same pull request as the recovery path it describes
-([build_plan.md](build_plan.md) working agreements).
+Stages 2.3 (the relay) and 2.4 (the run). The procedure lands in the same pull request as the
+recovery path it describes ([build_plan.md](build_plan.md) working agreements).
 
 ## 7. Funding a testnet demonstration
 

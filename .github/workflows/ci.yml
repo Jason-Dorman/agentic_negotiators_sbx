@@ -23,6 +23,9 @@ permissions:
 
 env:
   FOUNDRY_VERSION: v1.8.3
+  # The integration suite's database: the service container below, at the same host port and with
+  # the same role and database names as the local Compose profile (infra/compose.local.yaml).
+  TEST_DATABASE_URL: postgresql+asyncpg://agent_negotiation:agent_negotiation@127.0.0.1:55432/agent_negotiation_test
 
 jobs:
   # ------------------------------------------------------------------------------------
@@ -61,6 +64,19 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy .
 
+  # Stage 2.1: .importlinter's modules exist, as packages, from the first backend code. Each of its
+  # six contracts was shown to break on a deliberate violation before this job was turned on.
+  import-boundaries:
+    name: Import boundaries (import-linter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --all-groups --all-extras
+      - run: uv run lint-imports
+
   lint-web:
     name: Lint — TypeScript (eslint, prettier, tsc)
     runs-on: ubuntu-latest
@@ -90,14 +106,32 @@ jobs:
 
   # ------------------------------------------------------------------------------------
   # Gate: Python unit and integration (Anvil + PostgreSQL)                 blocks merge
-  # PostgreSQL is added with the backend integration suite in stage 2. Anvil is needed from
-  # stage 1: the reconstruction tests (A15) start their own on a free port, run the real deploy
-  # script, drive a real negotiation and reconstruct it. They skip with a clear message when
-  # Foundry is absent, which is why the toolchain is installed here rather than left to chance.
+  # PostgreSQL arrived with the persistence layer in stage 2.1: the integration suite migrates a
+  # real database and tests the constraints and triggers that live there. REQUIRE_INTEGRATION turns
+  # the suite's local "PostgreSQL is down, skipping" into a failure, because a gate that skips
+  # reports green without having run. Anvil is needed from stage 1: the reconstruction tests (A15)
+  # start their own on a free port, run the real deploy script, drive a real negotiation and
+  # reconstruct it. They skip with a clear message when Foundry is absent, which is why the
+  # toolchain is installed here rather than left to chance.
   # ------------------------------------------------------------------------------------
   test-python:
     name: Test — Python
     runs-on: ubuntu-latest
+    env:
+      REQUIRE_INTEGRATION: "1"
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: agent_negotiation
+          POSTGRES_PASSWORD: agent_negotiation
+          POSTGRES_DB: agent_negotiation_test
+          POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_negotiation -d agent_negotiation_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - uses: actions/checkout@v5
         with:
@@ -178,16 +212,6 @@ jobs:
   # Gates not yet earned. Skipped, never green, until the stage named on each wires it up.
   # None of these may be made a required check before then.
   # ------------------------------------------------------------------------------------
-  import-boundaries:
-    name: Import boundaries (stage 2)
-    if: false # .importlinter is written; the modules it names arrive in stage 2.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-groups --all-extras
-      - run: uv run lint-imports
-
   isolation:
     name: Isolation and leakage suite — A12 (stage 3)
     if: false
@@ -229,13 +253,43 @@ jobs:
       # missing row reading as a pass.
       - run: uv run python infra/scripts/check_contract_coverage.py coverage.txt
 
-  coverage:
-    name: Coverage thresholds — agent and backend (stage 2)
-    if: false
+  # The backend threshold is enforced from stage 2.1, with the first backend code; the agent's
+  # validator and signer join the rule list in stage 2.2. The assertion is a tested script, and a
+  # rule matching no file fails rather than passing vacuously.
+  coverage-python:
+    name: Coverage — backend 85 percent of lines
     runs-on: ubuntu-latest
+    env:
+      REQUIRE_INTEGRATION: "1"
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: agent_negotiation
+          POSTGRES_PASSWORD: agent_negotiation
+          POSTGRES_DB: agent_negotiation_test
+          POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_negotiation -d agent_negotiation_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - uses: actions/checkout@v5
-      - run: echo "Wired up with the code it measures."
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+      - run: uv sync --all-groups --all-extras
+      - run: forge build --root contracts
+      - run: uv run pytest -q --cov --cov-report=json:coverage.json
+      - run: >
+          uv run python infra/scripts/check_python_coverage.py coverage.json
+          --rule 'services/api/src/api/*:lines:85'
 
   # docs/test_strategy.md section 4.3. The snapshot covers the deterministic unit tests only:
   # fuzz and invariant gas figures move with the seed, so including them would make the gate

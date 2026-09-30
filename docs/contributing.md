@@ -33,19 +33,20 @@ The project is licensed Apache-2.0. `LICENSE` and `NOTICE` live at the repositor
 | Command | What it runs |
 |---|---|
 | `make setup` | `uv sync`, `pnpm install`, `pre-commit install` |
-| `make lint` | ruff format and check, `mypy --strict`, prettier, eslint, `tsc`, `forge fmt`, SPDX check, secret scan |
+| `make lint` | ruff format and check, `mypy --strict`, `lint-imports`, prettier, eslint, `tsc`, `forge fmt`, SPDX check, secret scan |
 | `make test` | `pytest`, `vitest`, `forge test` |
-| `make ci` | `make lint`, `make test`, then `make gates`; the same commands the pipeline runs |
-| `make gates` | The gas snapshot check and the contract coverage threshold — the gates that are neither lint nor test |
+| `make ci` | `make lint`, `make test`, then `make gates`; the same commands the pipeline runs, with `REQUIRE_INTEGRATION=1` as in CI, so it needs `make up` first |
+| `make gates` | The gas snapshot check and the contract and Python coverage thresholds — the gates that are neither lint nor test |
+| `make migrate` | Apply the backend's migrations to `DATABASE_URL` ([runbook.md](runbook.md) section 2) |
 | `make up` / `make down` | The local Compose profile: PostgreSQL and Anvil |
 | `make artefacts` | Check the committed ABIs and EIP-712 fixture against their generators (part of `make lint`) |
 | `make abi` / `make fixtures` | Regenerate those two. A changed fixture is a protocol version bump, not a chore |
 | `make snapshot` | Rewrite `contracts/.gas-snapshot` after an intended gas change |
-| `make snapshot-check` / `make coverage-contracts` | The two gates individually |
+| `make snapshot-check` / `make coverage-contracts` / `make coverage-python` | The gates individually |
 
 ### 1.1 Import boundaries (backend)
 
-Enforced by an `import-linter` contract in CI. The contract is written out in [`.importlinter`](../.importlinter) at the repository root and runs from stage 2, when the modules it names exist.
+Enforced by an `import-linter` contract in CI and in `make lint`. The contract is written out in [`.importlinter`](../.importlinter) at the repository root and runs from stage 2.1: every module it names exists as a package from the first backend code, with a docstring naming the sub-stage that fills it, so the boundary is enforced as the modules fill in rather than switched on afterwards. Each of the six contracts was shown to break on a deliberate violation before the gate was turned on.
 
 - `routes` → `controller`, `evidence`, `metrics`, `db.repositories`, `config`
 - `controller` → `turns`, `relay`, `indexer`, `validation`, `db.repositories`, `agent_client`
@@ -72,7 +73,7 @@ Changes to any of these require a reviewer to walk the data classification table
 
 - 3.12, `uv` managed. `ruff` for format and lint, `mypy --strict`, no `type: ignore` without a comment naming the reason.
 - Pydantic models with `extra="forbid"` for every external boundary (API bodies, observation, decision, scenario files).
-- Value objects for domain primitives: `MinorAmount`, `Address`, `Digest`, `SessionId`, `Sequence`. Do not pass `int` or `str` for these across module boundaries.
+- Value objects for domain primitives: `MinorAmount`, `Address`, `Digest`, `SessionId`, `Sequence`, in `negotiation_protocol.values` because both services pass them. Do not pass `int` or `str` for these across module boundaries. Canonical-JSON hashes (`observation_hash`, `mandate_hash`, `request_hash`) come from `negotiation_protocol.json_sha256` and nowhere else.
 - Protocols (`typing.Protocol`) for `Policy`, `ModelClient`, `ChainAdapter`, `KeyHolder`, and each repository. Concrete classes are injected in composition roots (`main.py`, test fixtures).
 - Async throughout the backend; blocking web3 calls run in a thread executor behind `ChainAdapter`.
 - Cyclomatic complexity under 10 per function (ruff `C901`); aim for 5. Domain-required exceptions are annotated with `# noqa: C901  reason: …` and reviewed.
@@ -119,6 +120,8 @@ From [test_strategy.md](test_strategy.md):
 - **A gate you have not run the way CI runs it is not a gate.** Stage 1 enabled the gas-snapshot job and no `make` target invoked it, so two faults went unnoticed until a review: the committed snapshot predated a new test file, and `forge snapshot --check … --root contracts` resolves the snapshot path against the working directory rather than against `--root`, reading a non-existent file. `make ci` therefore runs every gate that exists, and a gate's assertion lives in a script with tests rather than in a heredoc inside the workflow.
 - **`bash -e` is not `bash -o pipefail`.** A GitHub Actions `run:` step gets the first and not the second, so `some-command | tee log` reports `tee`'s exit status and a failing command sails through. The same trap makes `cmd | grep …; echo $?` useless when checking a tool's status by hand — which cost real time during this review.
 - **An exact set beats a denylist.** The ABI suite listed fifteen forbidden function names; an escape hatch called anything else passed. Assert the whole set, so that adding an external function is a deliberate edit to the test.
+- **A CHECK constraint passes when its expression is NULL.** The first version of the run-outcome constraints accepted a closed outcome with no reason code and any outcome with no actor, because `'closed' AND NULL BETWEEN 1 AND 3` is NULL, not false. Test `IS NOT NULL` before comparing a nullable column in a CHECK, and test each constraint with the NULL case as well as the wrong value.
+- **Inside an Alembic migration, wrap every constraint name in `op.f()`.** Alembic applies the metadata's naming convention to explicit names too, and a convention that embeds `%(constraint_name)s` turns `name="ck_runs_x"` into `ck_runs_ck_runs_x`. Autogenerate's comparison cannot see it — it does not compare check constraints — which is why the constraint tests assert every refusal by constraint name.
 - **For a schema that claims to be exhaustive, assert the field list, not only the values.** Every negative-instance test in the observation suite passed while the schema carried a field the protocol document does not list. Nothing was checking the names against the document, and no value-level test could have.
 - **Test the thing, not a stand-in for it, where the claim is about the outside world.** The deploy script is tested by deploying to a real Anvil and the reconstruction tool by reading what that chain actually recorded. Two defects came out of it that a fake would have hidden: `vm.serializeJson` sets an object's whole contents rather than adding to them, which silently reduced the deployment manifest to a single key, and web3's `process_receipt` decodes logs by event signature regardless of emitting address, which made every two-leg settlement appear to have four transfers because the two mock tokens share an ABI.
 

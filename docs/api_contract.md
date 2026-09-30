@@ -470,8 +470,8 @@ Idempotent. Delivers the mandate and configuration this instance needs for one r
   "effort": "high",
   "limits": { "model_call_ceiling": 20, "model_spend_ceiling_usd": "2.00", "model_timeout_s": 45, "repair_attempts": 1 },
   "expected_session": { "chain_id": 31337, "exchange_address": "0x…", "base_token": "0x…", "quote_token": "0x…", "base_amount_minor": "10000000", "max_offers": 8, "session_duration_s": 1800, "offer_lifetime_s": 600 },
-  "my_address": "0x…",
-  "key_ref": "env:BUYER_PRIVATE_KEY" | "keystore:/run/secrets/buyer.json",
+  "key_ref": "env:BUYER_ROOT_KEY" | "keystore:/run/secrets/buyer-root.json",
+  "expected_address": "0x…" | null,
   "mandate_version_id": "…",
   "mandate": { "reservation_price_minor": "100000000", "min_remaining_inventory_minor": "0", "instructions": "…" },
   "initial_balances": { "base_minor": "0", "quote_minor": "250000000" },
@@ -479,13 +479,31 @@ Idempotent. Delivers the mandate and configuration this instance needs for one r
 }
 ```
 
-Response `200`: `{ "provisioned": true, "my_address": "0x…", "policy_version": "det-1.0.0" | "model-1.0.0", "prompt_template_version": "v1.0.0" | null }`.
+Response `200`: `{ "provisioned": true, "my_address": "0x…", "key_derivation": { "scheme": "agent-negotiation-sandbox/participant-key/v1", "chain_id": 31337, "role": "buyer", "run_id": "…" }, "policy_version": "det-1.0.0" | "model-1.0.0", "prompt_template_version": "v1.0.0" | null }`.
+
+The run's participant key is **derived**, not supplied ([ADR-039](decision_log.md)). `key_ref` names the instance's root secret; the agent refuses it with `409 key_ref_mismatch` unless it is the root this instance is configured with, so a request routed to the wrong instance cannot make it sign as the other party. The agent derives the key from the root, the chain ID, its role and the run ID, and returns the address as `my_address`; the backend stores that address and `key_derivation` in `wallets` and never sees a key. `expected_address` is null on first provisioning. On a re-provisioning — after an agent restart, for instance — the backend sends the address it stored, and the agent refuses with `409 address_mismatch` if its derivation does not reproduce it.
 
 #### `POST /internal/runs/{run_id}/approve-session`
 
 The backend sends the decoded `SessionOpened` fields. The service recomputes `configHash`, checks parties, tokens, amounts, `maxOffers`, and expiry window against the provisioned expectation, and stores approval.
 
 Response `200`: `{ "approved": true, "config_hash": "0x…" }` or `409 session_mismatch` with the differing fields.
+
+#### `POST /internal/runs/{run_id}/setup-approval`
+
+The participant's ERC-20 `approve` of the exchange, needed once during setup ([ADR-040](decision_log.md)). The agent builds the whole transaction from provisioned state — the token is its role's (quote for the buyer, base for the seller), the spender is `expected_session.exchange_address`, the amount is `allowance_minor`, the chain is `expected_session.chain_id` — and signs it with the run's derived key. The caller supplies only what it must know about the chain:
+
+```json
+{ "nonce": 0, "gas_limit": 70000, "max_fee_per_gas_wei": "2000000000", "max_priority_fee_per_gas_wei": "1000000000" }
+```
+
+Response `200`:
+
+```json
+{ "raw_tx": "0x…", "tx_hash": "0x…", "from": "0x…", "token": "0x…", "spender": "0x…", "amount_minor": "250000000", "nonce": 0 }
+```
+
+`422 validation_error` for a gas limit above the agent's bound or a priority fee above the fee cap; `409 invalid_state` before provisioning. Deterministic: the same request returns the same transaction.
 
 #### `POST /internal/runs/{run_id}/turn`
 
@@ -534,6 +552,8 @@ Called after the run reaches a terminal state. The service discards the mandate 
 | 409 | `mandate_immutable` | Attempt to change a mandate after start |
 | 409 | `batch_not_local` | Batch requested on a non-local deployment |
 | 409 | `session_mismatch` | Agent service refused the on-chain session |
+| 409 | `key_ref_mismatch` | Agent service was asked to provision with a root key reference that is not its own ([ADR-039](decision_log.md)) |
+| 409 | `address_mismatch` | Agent service's derivation did not reproduce the address stored for the run ([ADR-039](decision_log.md)) |
 | 422 | `validation_error` | Field-level errors in `details.fields` |
 | 422 | `deployment_mismatch` | Chain ID or code hash differs from manifest |
 | 503 | `dependency_unavailable` | RPC, database, agent service, or model provider down |

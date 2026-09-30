@@ -85,6 +85,9 @@ docstring-code-format = true
 python_version = "3.12"
 strict = true
 warn_unreachable = true
+# Module names come from mypy_path, or from the repository root for anything outside it, so two
+# test directories can each have a conftest.py without colliding as one top-level module.
+explicit_package_bases = true
 disallow_any_unimported = true
 # A `type: ignore` must name its reason (docs/contributing.md 2.1); this keeps stale ones visible.
 warn_unused_ignores = true
@@ -95,6 +98,11 @@ mypy_path = [
     "packages/protocol/src",
     "infra/scripts",
     "packages/protocol/tools",
+    # Its modules import each other by bare name (`from conftest import ...`), as pytest runs them.
+    "packages/protocol/tests",
+    # Shared test helpers, imported by bare name. Deliberately a directory with no conftest.py:
+    # two conftest.py files on this path would be two top-level modules with one name.
+    "services/api/tests/support",
 ]
 exclude = ["contracts/lib/", "apps/web/"]
 
@@ -113,7 +121,7 @@ testpaths = [
 addopts = "-ra --strict-markers --strict-config"
 # `infra/scripts` and `packages/protocol/tools` hold command-line scripts rather than importable
 # packages (ADR-034), so pytest needs them on the path to test them at all.
-pythonpath = ["infra/scripts", "packages/protocol/tools"]
+pythonpath = ["infra/scripts", "packages/protocol/tools", "services/api/tests/support"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
