@@ -2,11 +2,13 @@
 
 Decisions the governance documents could not settle from the spec. Each gets a provisional answer so work can proceed; the product owner confirms or overrides it, and the matching decision-log entry is updated when they do.
 
-Every question raised so far has been answered. The [Resolved](#resolved) table is the record. The reasoning behind the answers that needed discussion is kept below, because the reasoning is the part that matters when one of them is revisited.
+One question is open, and deliberately so: the product owner deferred it to stage 5. Every other question raised so far has been answered, and the [Resolved](#resolved) table is the record. The reasoning behind the answers that needed discussion is kept below, because the reasoning is the part that matters when one of them is revisited.
 
 ## Open
 
-None. Q17 was answered by the product owner on 24 September 2026 and is recorded below.
+| # | Question | Status | Stage 2 behaviour until answered | Touches |
+|---|---|---|---|---|
+| Q20 | A reorg deeper than the confirmation threshold can remove a terminal event after the run has reached `TERMINAL`, which [architecture.md](architecture.md) section 6.1 makes final. What should happen? Possible on Sepolia at threshold 2. | **Deferred to stage 5** by the product owner, 25 September 2026, where finalized-head tracking is verified against a real RPC. | `TERMINAL` stays final and the indexer stops watching a terminal run. A14 exercises a reorg *before* the threshold — confirmation threshold 2 on Anvil — which is the case [test_strategy.md](test_strategy.md) describes. The alternative put to the product owner: keep watching until the terminal block is finalized, and on a reorg move the run to `RECOVERY_REQUIRED` with its outcome reset to pending. | architecture 6.1 and 5.5, data_model 5 and 6, build_plan stage 5 |
 
 Add new questions here as they arise, with a provisional answer and the documents the answer touches, rather than deciding silently in code.
 
@@ -14,7 +16,21 @@ Add new questions here as they arise, with a provisional answer and the document
 
 # Reasoning behind the answers that needed discussion
 
-Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026.
+Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026; Q18 and Q19 on 25 September 2026.
+
+## Q18: fresh participant wallets per run
+
+**The gap.** Spec section 8 and FR-S6 require fresh participant wallets for every run, and an address is never reused. ADR-023 reached participant keys through `env:` and `keystore:` references to fixed variables and files, regenerated "per run by a script" — a manual step and two agent restarts before every run. The stage 6 batches run hundreds of runs, and the backend, which has to store each wallet's address and fund it, cannot learn an address without holding the key.
+
+**The options put to the product owner.** Derive each run's key inside the agent from one root secret; regenerate keys by hand per run as documented; generate an ephemeral key in agent memory at provisioning; or drop the fresh-wallet rule for v0.1. Only derivation meets every requirement at once: no manual step, keys that never leave the agent, a run that survives an agent restart, and no stored per-run key. An ephemeral key is lost on restart, which would turn a routine agent restart into an aborted run.
+
+**Decision (accepted): derive per run inside the agent**, with one addition from the product owner: the derivation must be domain-separated by environment, role and run, so that a buyer key cannot collide with a seller key nor a local key with a Sepolia one. The database keeps the derived address and the derivation metadata, never a key. The scheme, and why the chain ID stands for the environment, are in [ADR-039](decision_log.md).
+
+## Q19: who signs a participant's setup approval
+
+**The gap.** Setup needs each participant wallet to sign an ERC-20 `approve` of the exchange, the key lives only in that participant's agent process, and the internal API had no endpoint for it.
+
+**Decision (accepted): the agent builds the approval itself** from provisioned state — its own role's token, the provisioned exchange as spender, the provisioned allowance — and the backend supplies nothing but nonce, gas limit and fee caps. The rejected alternative was to let the backend load participant keys for setup, which breaks the one boundary the security document states without exception. [ADR-040](decision_log.md).
 
 ## Q6: mandate storage at rest
 
@@ -88,3 +104,5 @@ Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026
 | Q15 | License | Apache-2.0, with a `NOTICE` file. `SPDX-License-Identifier: Apache-2.0` at the top of every Solidity source, in place before stage 1. Reasoning [above](#q15-license). | ADR-032, contributing, build_plan stage 0 | 21 September 2026 |
 | Q17 | Same-token deployment guard | Add the guard: `baseToken == quoteToken` reverts with a new `InvalidTokenPair()` error. The reasoning is in [ADR-037](decision_log.md); the short form is that the cost is one comparison and one error name, while the failure it prevents is silent and appears in the evidence as a successful run. | ADR-037, protocol 2 and 8.3 | 24 September 2026 |
 | Q16 | ENS naming | Adopted, display-only: one Sepolia name with subnames for the exchange and both mock tokens, resolved once at deployment and pinned into the manifest. Nothing resolves ENS at run time. Reasoning [above](#q16-ens-naming). | ADR-030, api_contract deployments, data_model 3.2, PRD FR-U10, test_strategy A17, build_plan stage 5 | 21 September 2026 |
+| Q18 | Fresh participant wallets per run | Each agent derives the run's key from one root secret with HMAC-SHA256, domain-separated by chain ID, role and run ID; the database stores the address and the derivation metadata, never a key. Reasoning [above](#q18-fresh-participant-wallets-per-run). | ADR-039, ADR-023 amended, api_contract 6, data_model 3.5, security 7, architecture 3.3 and 5.1 | 25 September 2026 |
+| Q19 | Signing a participant's setup approval | The agent builds and signs the ERC-20 `approve` itself from provisioned state; the backend supplies only nonce, gas limit and fee caps. Reasoning [above](#q19-who-signs-a-participants-setup-approval). | ADR-040, api_contract 6, architecture 5.1 | 25 September 2026 |

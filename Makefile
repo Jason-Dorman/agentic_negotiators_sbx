@@ -10,7 +10,22 @@ SHELL := /bin/bash
 # lives in infra/scripts/toolchain.sh.
 export PATH := $(HOME)/.local/bin:$(HOME)/.foundry/bin:$(PATH)
 
-.PHONY: help setup lint format test gates ci up down logs reset-db hooks abi fixtures artefacts snapshot snapshot-check coverage-contracts
+# infra/.env, when present, supplies the database URLs the recipes use (docs/runbook.md section 2).
+# Only these two are exported: the file also holds keys, and nothing here needs them. Each is
+# exported only when defined, because `export` of an undefined variable hands the recipe an empty
+# string, which is not "unset" to a program that reads it.
+-include infra/.env
+ifdef DATABASE_URL
+export DATABASE_URL
+endif
+ifdef TEST_DATABASE_URL
+export TEST_DATABASE_URL
+endif
+
+# The Python coverage report the gate reads. Outside the tree, like the contract coverage report.
+PYTHON_COVERAGE_JSON := /tmp/negotiation-python-coverage.json
+
+.PHONY: help setup lint format test gates ci up down logs reset-db hooks abi fixtures artefacts snapshot snapshot-check coverage-contracts coverage-python migrate
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -32,6 +47,7 @@ lint: ## Format check, lint and type check, all three languages
 	uv run ruff format --check .
 	uv run ruff check .
 	uv run mypy .
+	uv run lint-imports
 	pnpm run format:check
 	pnpm run lint
 	pnpm run typecheck
@@ -92,9 +108,23 @@ coverage-contracts: ## The 100 percent gate on NegotiationExchange (test_strateg
 	@cat /tmp/negotiation-coverage.txt
 	@uv run python infra/scripts/check_contract_coverage.py /tmp/negotiation-coverage.txt
 
-gates: snapshot-check coverage-contracts ## The two gates that are neither lint nor test
+# docs/test_strategy.md section 10: backend 85 percent of lines. The agent's validator and signer
+# (100 percent of branches) join this rule set in stage 2.2, with the code they measure. A rule that
+# matches no file fails, so a renamed directory cannot turn this gate green by measuring nothing.
+coverage-python: ## The Python coverage thresholds (test_strategy 10); needs `make up`
+	REQUIRE_INTEGRATION=1 uv run pytest -q --cov --cov-report=json:$(PYTHON_COVERAGE_JSON)
+	uv run python infra/scripts/check_python_coverage.py $(PYTHON_COVERAGE_JSON) \
+		--rule 'services/api/src/api/*:lines:85'
 
-ci: lint test gates ## What CI runs
+gates: snapshot-check coverage-contracts coverage-python ## The gates that are neither lint nor test
+
+# REQUIRE_INTEGRATION turns a skipped integration test into a failed one, as it is in CI: a local
+# `make ci` that skipped the PostgreSQL suite would be green for a reason CI would not accept.
+ci: export REQUIRE_INTEGRATION := 1
+ci: lint test gates ## What CI runs; needs `make up`
+
+migrate: ## Apply the database migrations to DATABASE_URL (docs/runbook.md section 2)
+	uv run python -m api.db.migrate upgrade
 
 up: ## Start PostgreSQL and Anvil (local profile)
 	docker compose --profile local up -d --wait

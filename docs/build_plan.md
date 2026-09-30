@@ -135,14 +135,179 @@ ones worth remembering:
 
 ## Stage 2: Deterministic end-to-end run
 
-**Deliverables**
-- Backend: database models and migrations, run controller state machine, turn executor, observation builder, relay with outbox, indexer with canonicality, projection, setup validator, operator API (all routes except export and metrics may be stubbed), SSE.
-- Agent service: internal API, `DeterministicPolicy`, `MandateValidator`, signer, key holder, HMAC auth.
-- Compose profile runs api, agent-a, agent-b.
-- Integration test harness with Anvil and PostgreSQL.
-- `docs/runbook.md` continues (started in stage 0): recovering pending transactions, and the `KeyHolder` loading procedure deferred from stage 0 under [ADR-023](decision_log.md). It grows in every subsequent stage and is completed in stage 5.
+**Status: in progress, 25 September 2026.** Split into five sub-stages on 25 September 2026 at the
+product owner's direction. As one change the stage was too large to build or to review well: its
+estimate is 8 to 12 days, and this plan already names it the risk concentration, where the outbox,
+indexer, reorg and recovery bugs live. Each sub-stage is one branch and one pull request and ends in
+a demonstrable artefact of its own. The stage's exit condition is unchanged and is met at the end of
+2.5.
 
-**Exit condition:** A02 (deterministic settlement) and A03 (infeasible no-deal) complete end to end via the API with evidence rows in every table; A06, A13, A14 integration tests pass; the export route produces a document that validates against the schema and the reconstruction tool agrees with it (A15).
+```mermaid
+flowchart LR
+    S1[1 Protocol and contracts] --> P[2.1 Persistence]
+    S1 --> AG[2.2 Agent service]
+    P --> CH[2.3 Relay, indexer,<br/>projection]
+    P --> RC[2.4 Run controller<br/>and turns]
+    AG --> RC
+    CH --> RC
+    RC --> OP[2.5 Operator API,<br/>evidence, Compose]
+    OP --> S3[3 Model decisions]
+```
+
+2.2 depends on nothing in 2.1 and could be built first; the numbering is the order they are being
+built in.
+
+Three questions this stage raised were put to the product owner before it started, and answered on
+25 September 2026. Per-run participant keys are derived inside the agent service, domain-separated
+by chain, role and run ([ADR-039](decision_log.md), Q18). A participant's setup `approve` is built
+and signed by its own agent service ([ADR-040](decision_log.md), Q19). What happens when a reorg
+deeper than the confirmation threshold removes a terminal event is deferred to stage 5
+([Q20](open_questions.md)).
+
+**Stage exit condition, met at the end of 2.5:** A02 (deterministic settlement) and A03 (infeasible
+no-deal) complete end to end via the API with evidence rows in every table; A06, A13, A14
+integration tests pass; the export route produces a document that validates against the schema and
+the reconstruction tool agrees with it (A15).
+
+`docs/runbook.md` continues in every sub-stage that introduces an operational procedure: the
+`KeyHolder` loading procedure deferred from stage 0 under [ADR-023](decision_log.md) in 2.2, and
+recovering pending transactions in 2.3 and 2.4.
+
+### Stage 2.1: Persistence
+
+**Status: complete, 26 September 2026**, on branch `feature/data-models`. Every deliverable below is
+done and `make ci` — which runs every gate the way CI does, integration suite required — is green:
+423 Python tests (149 of them new), 115 Foundry tests, 31 Vitest tests, `NegotiationExchange` still at
+100 percent on all four measures, the backend at 99.1 percent of lines against its 85 percent gate,
+and all six import contracts kept. One thing has not yet been observed: the CI workflow's new
+PostgreSQL service container has not run on GitHub, and the pull request is where it first will.
+
+**Deliverables**
+- **done** — SQLAlchemy models for every table in [data_model.md](data_model.md) section 3 and every
+  enum in section 4, including the derivation metadata `wallets` gains under ADR-039.
+- **done** — The initial Alembic migration, with a downgrade: the constraints that make duplicate
+  execution a database error rather than an application check (data model section 1, principle 4),
+  and the immutability triggers of section 8. Migrations live in
+  `services/api/src/api/db/migrations/`, so they ship inside the package that runs them, and apply
+  with `make migrate` or `python -m api.db.migrate`.
+- **done** — Repositories behind `typing.Protocol` interfaces with a unit of work, so that nothing
+  outside `api.db` touches a SQLAlchemy session ([contributing.md](contributing.md) section 1.1). The
+  chain-event and balance-snapshot repositories return canonical rows only; the one method that
+  returns non-canonical rows is named for the export that needs them.
+- **done** — The value objects `MinorAmount`, `Address`, `Digest`, `SessionId` and `Sequence`
+  ([contributing.md](contributing.md) section 2.1), in the protocol package because both services
+  pass them, and beside them the one canonical-JSON hash both services record.
+- **done** — The PostgreSQL half of the integration harness: a migrated test database, cleaned
+  between tests, that skips when PostgreSQL is down locally and fails instead in CI and under
+  `make ci`.
+- **done** — A package for every module `.importlinter` names, and the import-boundary gate turned
+  on in CI and in `make lint`; each of its six contracts was first shown to break on a deliberate
+  violation. The backend line-coverage gate (85 percent) is on, asserted by
+  `infra/scripts/check_python_coverage.py`.
+
+**Confirmed by mutation, not by coverage.** Eighteen deliberate breakages of the schema and the
+repositories were applied one at a time — each uniqueness rule dropped, each NULL guard removed,
+the canonical filter taken out of a projection read, the row lock taken off run-event appends, the
+relay nonce made to ignore the chain, a takeover made to reset it, a trigger removed or weakened,
+a constraint name left unwrapped — and every one turned the suite red, through the test aimed at it.
+The tree was restored byte for byte and checked by content hash, not by `git status`.
+
+**What building it found, which the next sub-stages need.**
+
+1. **A CHECK constraint passes when its expression is NULL.** The first run-outcome constraints
+   accepted a closed outcome with no reason code, and any outcome with no actor, because
+   `'closed' AND NULL BETWEEN 1 AND 3` is NULL rather than false. Every clause now tests
+   `IS NOT NULL` first, and the constraint tests include the NULL case for each.
+2. **Alembic applies the naming convention to explicit names inside a migration**, so
+   `name="ck_runs_x"` became `ck_runs_ck_runs_x`. Autogenerate's comparison cannot see it — it does
+   not compare check constraints — and it was caught only because the constraint tests assert each
+   refusal by name. Every name in a migration is now wrapped in `op.f()`.
+3. **`export VAR` in a Makefile hands a recipe an empty string when `VAR` was never defined.** With
+   no `infra/.env`, the integration harness received `TEST_DATABASE_URL=""` and every test errored.
+   It passed when run directly and failed only under `make ci` — the stage 1 lesson about gates not
+   run the way CI runs them, again, one layer down.
+4. **Mutations need their own check.** Two of the first mutations "caught" were caught for the wrong
+   reason: the edit left the SQL invalid, so the migration failed to apply and every test errored.
+   A mutation counts only when the test aimed at it fails, not when the suite cannot start.
+
+**Exit condition:** `alembic upgrade head` on an empty PostgreSQL 16 produces exactly the tables,
+columns, enums and constraints data_model.md lists — asserted against a transcription of the
+document, and against the models by Alembic's own autogenerate comparison — and `downgrade base`
+removes all of it. Integration tests show the database itself refusing a duplicate action, a
+duplicate outbox submission, a second live transaction for one signed action and a reused wallet
+address; the immutability triggers refusing updates; and the chain-event repository never handing a
+non-canonical row to a projection. `lint-imports` and the backend coverage threshold are green CI
+gates.
+
+### Stage 2.2: Agent service
+
+**Deliverables**
+- `KeyHolder`: resolves the instance's root key from an `env:` or `keystore:` reference and derives
+  each run's signing key under ADR-039. It exposes signing and never key material.
+- `MandateValidator`, `DeterministicPolicy` ([protocol.md](protocol.md) section 13), and the
+  typed-message signer that builds every message from validated state.
+- The internal API of [api_contract.md](api_contract.md) section 6 behind HMAC — health, provision,
+  approve-session, setup-approval (ADR-040), turn and release — with run-scoped state and the
+  service entry point.
+- Runbook section 3, "Loading keys".
+- Coverage gate: 100 percent of branches on the validator and the signer.
+
+**Exit condition:** two agent instances, driven over their internal API by a test harness standing
+in for the backend and the relay, negotiate `default-overlap` and `infeasible-clone` on Anvil
+through the real contract. The deterministic pair settles at 93.333333 mUSD; the infeasible pair ends
+in the buyer's signed Close with `terms_unacceptable`. Every signature recovers to that run's derived
+address and none to a root, and each table-driven validator case asserts its feedback text and that
+nothing was signed.
+
+### Stage 2.3: Relay, indexer and projection
+
+**Deliverables**
+- `chain`: the web3 adapter behind a thread executor, ABI loading, and decoding of the seven events
+  and the twenty-three custom errors.
+- `relay`: the durable outbox — persist before broadcast, serialized relay nonces, rebroadcast of
+  the stored raw transaction, and gas replacement linked by `replaces_id`.
+- `indexer`: receipt polling, a log scan from the manifest's `start_block`, confirmation depth, the
+  finalized head, block-hash tracking, reorg detection, and rebuild from the last common block.
+- `projection`: the session view, the timeline with each sentence rendered once and stored
+  ([ADR-024](decision_log.md)), and balance snapshots.
+- Runbook section 6, "Recovering pending transactions", for the relay.
+
+**Exit condition:** against Anvil and PostgreSQL, signed actions submitted through the relay are
+indexed as canonical events and projected into the session view and timeline. A relay stopped
+between `send_raw_transaction` and receipt persistence recovers the transaction it sent and sends no
+second one (A13 at the chain layer); a duplicate submission of a confirmed action reconciles as
+already complete with no extra transfer (A06); and an `evm_snapshot`/`evm_revert` reorg at
+confirmation threshold 2 marks the removed events non-canonical and rolls the projection back (A14
+at the chain layer).
+
+### Stage 2.4: Run controller and turns
+
+**Deliverables**
+- `observation`: the allowlisted observation of [protocol.md](protocol.md) section 12, built for the
+  acting party only, with a test that it never reads the opponent's mandate row.
+- `agent_client` with HMAC, and `validation`, the setup validator of spec section 3.1.
+- `controller`: the run state machine of [architecture.md](architecture.md) section 6.1, the lease
+  and the single active run, setup (funding, minting, agent-signed approvals, `createSession`, and
+  session approval by both agents), pause, resume, abort, expiry, and recovery after a restart.
+- `turns`: the turn executor of spec section 9.2.
+- Runbook section 6 extended to run-level recovery.
+
+**Exit condition:** driven in-process through the controller, A02 settles and A03 ends in a close,
+end to end on Anvil, with rows in every table a run touches. The A13 crash-recovery and A14 reorg
+tests pass at the run level — one settlement and one transaction after a crash, a run paused with
+cause `reorg` — and every transition in architecture 6.1 is exercised, illegal ones included.
+
+### Stage 2.5: Operator API, evidence and Compose
+
+**Deliverables**
+- The operator API of [api_contract.md](api_contract.md) section 2 with idempotency keys, operation
+  records and the operator token. The batch routes arrive with the evaluator in stage 6.
+- SSE with `Last-Event-ID` replay from `run_events`.
+- `evidence`, the export document, and `metrics`, the per-run metrics of spec section 11.2.
+- The OpenAPI snapshot test of api_contract section 8.
+- Dockerfiles and the Compose services `api`, `agent-a` and `agent-b`.
+
+**Exit condition:** the stage 2 exit condition above, met through the HTTP API.
 
 ## Stage 3: Model decisions
 
@@ -207,10 +372,15 @@ Rough, single developer with AI assistance, for planning only:
 |---|---|
 | 0 | 1 to 2 days |
 | 1 | 4 to 6 days |
-| 2 | 8 to 12 days |
+| 2 | 8 to 12 days in total |
+| 2.1 Persistence | 1 to 2 days |
+| 2.2 Agent service | 2 days |
+| 2.3 Relay, indexer, projection | 2 to 3 days |
+| 2.4 Run controller and turns | 2 to 3 days |
+| 2.5 Operator API, evidence, Compose | 2 days |
 | 3 | 4 to 6 days |
 | 4 | 6 to 9 days |
 | 5 | 2 to 4 days plus testnet wait time |
 | 6 | 3 to 5 days plus batch run time |
 
-Stage 2 is the risk concentration: outbox, indexer, reorg, and recovery are where most subtle bugs live. Budget review time there.
+Stage 2 is the risk concentration: outbox, indexer, reorg, and recovery are where most subtle bugs live. Budget review time there — which is why it is built and reviewed as five sub-stages rather than one change, and why 2.3, where most of those four live, is on its own.

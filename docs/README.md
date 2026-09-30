@@ -12,9 +12,9 @@ Governance documents for the Two-Agent Negotiation and Settlement Sandbox. Read 
 | [data_model.md](data_model.md) | PostgreSQL schema, enums, invariants, data classification, migration policy | Touching persistence or export |
 | [security_and_trust_boundaries.md](security_and_trust_boundaries.md) | What is protected, boundaries, authority model, threat table, secrets, disclosures | Touching anything in the privacy-sensitive module list |
 | [test_strategy.md](test_strategy.md) | Test layers, acceptance mapping A01 to A17, CI gates, coverage thresholds | Writing or reviewing tests |
-| [build_plan.md](build_plan.md) | Stages 0 to 6 with exit conditions and working agreements | Planning the next piece of work |
+| [build_plan.md](build_plan.md) | Stages 0 to 6 with exit conditions and working agreements; stage 2 is split into sub-stages 2.1 to 2.5 | Planning the next piece of work |
 | [contributing.md](contributing.md) | Repository layout, import boundaries, code standards, workflow, review checklist | Before every PR |
-| [runbook.md](runbook.md) | Local startup, database isolation and ports, keys and secrets, deploying the contracts and reading the manifest, reconstructing a session from chain data; recovery, funding, replay and export as they arrive | Running the stack; any operational procedure |
+| [runbook.md](runbook.md) | Local startup, database isolation and ports, applying the schema and running the integration suite, keys and secrets, deploying the contracts and reading the manifest, reconstructing a session from chain data; recovery, funding, replay and export as they arrive | Running the stack; any operational procedure |
 | [decision_log.md](decision_log.md) | ADRs with rationale; includes the assumptions made where the spec was silent | Before changing a decision; when adding one |
 | [open_questions.md](open_questions.md) | Questions for the product owner: what is still open, the reasoning behind each recommendation, and a dated record of what has been answered | Now, and whenever an assumption needs confirming |
 | [engineering-principles.md](engineering-principles.md) | General engineering principles (SOLID, coupling, cohesion, testing mindset) | Background reading |

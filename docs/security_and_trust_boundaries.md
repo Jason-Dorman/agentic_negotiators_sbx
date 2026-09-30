@@ -132,8 +132,9 @@ The policy signer validates the **complete trade** before signing an offer, beca
 
 | Secret | Where it lives | How it is loaded | Rotation |
 |---|---|---|---|
-| Participant keys (local) | `.env` (git-ignored), generated per run by a script | `env:` key ref into `KeyHolder` | New wallets every run |
-| Participant keys (Sepolia) | Encrypted web3 keystore JSON in `infra/secrets/` (git-ignored), password in env ([ADR-023](decision_log.md)) | `keystore:` key ref | New wallets every run |
+| Participant root secrets (local) | `.env` (git-ignored), one per agent instance, generated once by a script | `env:` key ref into `KeyHolder` | Per deployment; the per-run keys derived from it are new every run ([ADR-039](decision_log.md)) |
+| Participant root secrets (Sepolia) | Encrypted web3 keystore JSON in `infra/secrets/` (git-ignored), password in env ([ADR-023](decision_log.md)) | `keystore:` key ref | Same |
+| Participant keys (per run) | Nowhere. Derived inside the agent process at provisioning from the instance's root, the chain ID, the role and the run ID | Never loaded; recomputed on re-provisioning | New wallets every run; the database stores the address and the derivation metadata only |
 | Operator key | `.env` or keystore | Backend only | Per deployment |
 | Relay key | `.env` or keystore | Backend only | Per deployment; fund with test ETH only |
 | Model API key | `.env` for each agent instance, separately | `anthropic` SDK from env | Operator-managed |
@@ -142,7 +143,11 @@ The policy signer validates the **complete trade** before signing an offer, beca
 
 Keystores are in place from the start rather than retrofitted for the Sepolia stage, so the `keystore:` path through the key holder is exercised by tests from stage 2 and the Sepolia deployment introduces no new code path. The local profile keeps `env:` refs so a developer needs no password to run the suite. Neither is production custody, and the runbook says so.
 
-The two halves land in different stages, and saying which is which avoids a false sense of coverage. **Generation** exists from stage 0: `infra/scripts/generate_keys.py` writes `env:` refs for the local profile and encrypted keystores into `infra/secrets/` for Sepolia. **Runtime loading** is the `KeyHolder` in `services/agent/src/agent/keys/` and arrives with the agent service in stage 2 ([ADR-023](decision_log.md)). Whatever the reference form, the boundary is the same and does not change in any later stage: a signing key stays inside the agent service process, the key holder exposes signing rather than key material, and no key reaches a model prompt, the browser bundle, an evidence export, an ordinary log line, the database, or the other agent instance.
+The two halves land in different stages, and saying which is which avoids a false sense of coverage. **Generation** exists from stage 0: `infra/scripts/generate_keys.py` writes `env:` refs for the local profile and encrypted keystores into `infra/secrets/` for Sepolia. **Runtime loading** is the `KeyHolder` in `services/agent/src/agent/keys/` and arrives with the agent service in stage 2.2 ([ADR-023](decision_log.md)). Whatever the reference form, the boundary is the same and does not change in any later stage: a signing key stays inside the agent service process, the key holder exposes signing rather than key material, and no key reaches a model prompt, the browser bundle, an evidence export, an ordinary log line, the database, or the other agent instance.
+
+**What a reference points at is a root, not a trading key** ([ADR-039](decision_log.md)). A fresh wallet every run is a spec requirement, so each agent instance derives the run's key from its root secret with HMAC-SHA256 over the chain ID, its role and the run ID, and reports only the address. Three consequences are worth stating. The derivation is domain-separated, so the same root configured for both roles, or for both profiles, still yields distinct keys. The root never signs anything, so a root and a trading key are never the same secret in use. And a root is more valuable than any one participant key: whoever holds it can derive the key for any run of that instance, which is why it sits behind exactly the controls ADR-023 set for participant keys and no weaker ones.
+
+A participant's one setup transaction, the ERC-20 `approve` of the exchange, is built and signed by the same agent from provisioned state ([ADR-040](decision_log.md)). The backend supplies a nonce and fee caps and nothing that decides what the transaction does.
 
 Mandates are stored in plaintext. Their confidentiality rests on process isolation, repository access control, and the classification table, on a host the operator fully trusts — not on encryption at rest ([ADR-031](decision_log.md)). This is stated plainly rather than softened, because a reader who assumes the database is encrypted would draw the wrong conclusion from an exported dump.
 

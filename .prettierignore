@@ -9,6 +9,7 @@ test-results/
 contracts/lib/
 contracts/out/
 contracts/cache/
+.import_linter_cache/
 docs/evidence/
 docs/deployments/
 
