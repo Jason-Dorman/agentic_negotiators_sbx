@@ -17,6 +17,7 @@ Shared helpers live here, in a named module on the `pythonpath`, never in a conf
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -115,6 +116,7 @@ class AnvilChain:
         self.base_token = self._contract("base_token_address", "MockERC20")
         self.quote_token = self._contract("quote_token_address", "MockERC20")
         self.domain = Domain(int(manifest["chain_id"]), manifest["exchange_address"])
+        self.automining = True
 
     def _contract(self, key: str, abi: str) -> Contract:
         return self.w3.eth.contract(
@@ -139,6 +141,12 @@ class AnvilChain:
 
     def automine(self, on: bool) -> None:
         self.rpc("evm_setAutomine", on)
+        self.automining = on
+
+    def pooled(self) -> int:
+        """Transactions in Anvil's pool not yet mined."""
+        status = self.rpc("txpool_status")
+        return int(status["pending"], 16) + int(status["queued"], 16)
 
     def block_gas_limit(self, limit: int) -> None:
         self.rpc("evm_setBlockGasLimit", hex(limit))
@@ -364,6 +372,20 @@ class Backend:
         )
 
     async def poll(self) -> PollReport:
+        """One indexer poll, after automine has mined what was sent.
+
+        Anvil's automine can mine a transaction a moment after `send_raw` returns, and a poll
+        records only blocks at or below the head it read (stage 2.3 CI failure): a test that sends
+        and then polls once means "after it is mined". With automine off, a test holds
+        transactions in the pool on purpose, and nothing waits.
+        """
+        if self.chain.automining:
+            for _ in range(200):
+                if self.chain.pooled() == 0:
+                    break
+                await asyncio.sleep(0.025)
+            else:
+                raise AssertionError("automine left transactions in the pool for 5 s")
         return await self.indexer.poll()
 
     async def project(self, session: Session) -> RunProjection:

@@ -108,3 +108,22 @@ class FailsBlockOnce(Web3ChainAdapter):
             self.failed = True
             raise RpcUnavailableError("header not found")
         return await super().block(number)
+
+
+class HeadOneBehind(Web3ChainAdapter):
+    """The head the poll reads is one block old: a transaction is mined just after it is read,
+    as Anvil's automine and a busy Sepolia both allow. What the poll then finds in that newer block
+    is beyond the head it is describing."""
+
+    def __init__(self, rpc_url: str) -> None:
+        super().__init__(rpc_url)
+        self.armed = True
+
+    async def head(self) -> BlockRef:
+        head = await super().head()
+        if not self.armed:
+            return head
+        self.armed = False
+        older = await super().block(head.number - 1)
+        assert older is not None
+        return older

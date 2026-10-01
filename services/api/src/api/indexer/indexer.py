@@ -11,11 +11,12 @@ One `poll()` does five things, in an order that matters:
    return is an unanswered question, never a mismatch: the adapter raises, and the poll fails as an
    outage rather than inventing a reorg (stage 2.3 review).
 2. **Receipts.** Every transaction still awaiting one — a `replaced` original or a `dropped`
-   sibling included — is looked up by hash. A receipt records the inclusion; the first included
-   transaction of a nonce group, or of a signed action, drops the others. A receipt with status 0 is
-   an execution failure: the revert is replayed against the inclusion block and then its parent,
-   decoded to its protocol error (ADR-017), or recorded as `Undetermined` when neither replay
-   reproduces it (ADR-056); its timeline sentence is rendered and stored (ADR-051).
+   sibling included — is looked up by hash. A poll describes the chain at the head it read, so a
+   receipt in a newer block waits for the next poll. A receipt records the inclusion; the first
+   included transaction of a nonce group, or of a signed action, drops the others. A receipt with
+   status 0 is an execution failure: the revert is replayed against the inclusion block and then
+   its parent, decoded to its protocol error (ADR-017), or recorded as `Undetermined` when neither
+   replay reproduces it (ADR-056); its timeline sentence is rendered and stored (ADR-051).
 3. **The log scan**, from the manifest's `start_block` on the first poll and after that from the
    lower of where the last poll stopped and the first unfinalized block, in chunks the RPC will
    serve. It finds events from transactions this backend did not send — an expiry anyone may call,
@@ -317,7 +318,9 @@ class Indexer:
             if (row.sender, row.nonce) in settled_groups:
                 continue
             receipt = await self._chain.receipt(row.tx_hash)
-            if receipt is None:
+            if receipt is None or receipt.block_number > poll.head:
+                # A block mined after this poll read its head is the next poll's: recorded now, it
+                # would sit above the head at depth 0 and be judged against a chain not yet read.
                 continue
             settled_groups.add((row.sender, row.nonce))
             await self._record_inclusion(poll, row, receipt)

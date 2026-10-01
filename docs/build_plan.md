@@ -386,7 +386,7 @@ accepts it, through an observation the agent checked for consistency.
 
 **Status: complete, 1 October 2026**, on branch `feature/relay-indexer-projection`, cut from `main`,
 and adversarially reviewed the same day (below). Every deliverable below is done and `make ci` is
-green: 1,200 Python tests (184 of them new), 115 Foundry tests, 31 Vitest tests, the
+green: 1,201 Python tests (185 of them new), 115 Foundry tests, 31 Vitest tests, the
 backend at 98.8 percent of lines, the agent's validator and signer still at 100 percent of
 branches, and all six import contracts kept. As with 2.1 and 2.2, the pipeline itself has not yet
 run this branch on GitHub.
@@ -470,7 +470,13 @@ to the event's amount), five in the projection and four in the codec.
 5. **Above `db`, import its interface modules, not the package.** `api.db`'s `__init__` imports
    `Database` and so SQLAlchemy, and `sessions-stay-in-db` counts that transitively; the first relay
    imported `api.db` and broke the contract.
-6. **Three tests did not test what they were named for**, and contributing.md section 3 now says so:
+6. **A poll must describe one head.** The pull request's CI run failed where every local run had
+   passed: on a loaded runner, Anvil's automine mined an abort a moment after a poll had read its
+   head, the receipt was recorded above that head at depth 0, and the outcome stayed below its
+   threshold. On Sepolia a block can land mid-poll the same way. A receipt in a block above the
+   poll's head now waits for the next poll — a test reads the head one block behind and shows it —
+   and the test harness's `poll()` waits for automine to empty the pool before it polls.
+7. **Three tests did not test what they were named for**, and contributing.md section 3 now says so:
    a "race" that never raced until a barrier forced it; a reorg test whose snapshot postdated what it
    reverted, now with a control; and a recovery path that marked a pooled transaction `submitted`
    while leaving its action at `signed`. Coverage, which marked a few lines after an `await` as
