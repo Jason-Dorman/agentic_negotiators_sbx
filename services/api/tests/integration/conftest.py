@@ -17,8 +17,11 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+from anvil_chain import deploy, running_anvil
+from api_chain import AnvilChain, Backend
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
@@ -139,3 +142,41 @@ async def raw_sql(migrated_url: str) -> AsyncIterator[AsyncConnection]:
             yield connection
     finally:
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------------------------
+# The chain half (stage 2.3): one throwaway Anvil and one real deployment per session
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def anvil_rpc() -> Iterator[str]:
+    """A fresh Anvil on a free port, torn down with the session (`anvil_chain`)."""
+    with running_anvil() as url:
+        yield url
+
+
+@pytest.fixture(scope="session")
+def manifest(anvil_rpc: str) -> dict[str, Any]:
+    """The real deploy script, run against the throwaway chain."""
+    return deploy(anvil_rpc, "local-api-test")
+
+
+@pytest.fixture
+def chain(anvil_rpc: str, manifest: dict[str, Any]) -> Iterator[AnvilChain]:
+    """The chain, with every control a test may touch put back afterwards.
+
+    A test that turns automine off or lowers the block gas limit would otherwise leave the chain
+    unusable for the next one.
+    """
+    anvil = AnvilChain(anvil_rpc, manifest)
+    yield anvil
+    anvil.automine(True)
+    anvil.block_gas_limit(30_000_000)
+    anvil.mine()
+
+
+@pytest.fixture
+def backend(database: Database, chain: AnvilChain) -> Backend:
+    """The relay, indexer and projector, wired as the stage 2.4 controller will wire them."""
+    return Backend(database, chain)

@@ -563,7 +563,7 @@ class OutboxTx(Base):
             unique=True,
             postgresql_where=text(OUTBOX_LIVE_PER_SIGNED_ACTION),
         ),
-        *_non_negative("nonce", "attempts", "block_number"),
+        *_non_negative("nonce", "attempts", "block_number", "submitted_block"),
         Index(None, "run_id"),
         Index(None, "status"),
     )
@@ -590,6 +590,10 @@ class OutboxTx(Base):
     )
     submitted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP, nullable=True)
     included_at: Mapped[datetime | None] = mapped_column(TIMESTAMP, nullable=True)
+    # Migration 0002 (stage 2.3): the chain head at first broadcast, which the relay's replacement
+    # trigger counts from (ADR-050), and an execution failure's timeline sentence (ADR-051).
+    submitted_block: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sentence: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

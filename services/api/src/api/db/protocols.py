@@ -20,6 +20,8 @@ Three of these interfaces carry a rule, not only a shape:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
@@ -74,6 +76,14 @@ class RunRepository(Protocol):
 
     async def get_for_update(self, run_id: uuid.UUID) -> RunRecord | None:
         """The row, locked until the unit of work ends. Serialises state transitions."""
+        ...
+
+    async def get_by_session(self, session_id: SessionId) -> RunRecord | None:
+        """The run a chain session belongs to: how the indexer attributes an event to a run."""
+        ...
+
+    async def with_open_sessions(self) -> list[RunRecord]:
+        """Runs with a session that are not `terminal`: what the indexer watches (ADR-053)."""
         ...
 
     async def update_state(
@@ -199,6 +209,10 @@ class SignedActionRepository(Protocol):
         self, action_id: uuid.UUID, status: ActionStatus, revert_error: str | None = None
     ) -> SignedActionRecord: ...
 
+    async def reset_to_submitted(self, action_id: uuid.UUID) -> SignedActionRecord:
+        """After a reorg removed its inclusion: `submitted`, and any revert error cleared."""
+        ...
+
 
 class OutboxRepository(Protocol):
     async def add(self, new: NewOutboxTx) -> OutboxRecord: ...
@@ -212,7 +226,40 @@ class OutboxRepository(Protocol):
 
     async def live_for_signed_action(self, signed_action_id: uuid.UUID) -> OutboxRecord | None: ...
     async def max_nonce(self, sender: Address) -> int | None: ...
-    async def mark_submitted(self, outbox_id: uuid.UUID, at: datetime) -> OutboxRecord: ...
+
+    async def for_signed_action(self, signed_action_id: uuid.UUID) -> list[OutboxRecord]:
+        """Every transaction ever signed for one action, oldest first."""
+        ...
+
+    async def nonce_group(self, sender: Address, nonce: int) -> list[OutboxRecord]:
+        """Every transaction signed for one sender and nonce: an original and its replacements."""
+        ...
+
+    async def awaiting_receipt(self) -> list[OutboxRecord]:
+        """What the indexer polls receipts for: rows `pending`, `submitted`, `replaced` or `dropped`
+        with no block, of runs not `terminal`, in a sender-and-nonce group none of whose
+        transactions has been included yet.
+
+        A `replaced` original or a `dropped` sibling is polled too, because either can still be the
+        one that is mined.
+        """
+        ...
+
+    async def with_block_from(self, from_block: int) -> list[OutboxRecord]:
+        """Rows recorded as included at or above a height: what a reorg check re-verifies."""
+        ...
+
+    async def in_status(self, *statuses: TxStatus) -> list[OutboxRecord]: ...
+
+    async def mark_submitted(
+        self, outbox_id: uuid.UUID, at: datetime, submitted_block: int | None = None
+    ) -> OutboxRecord:
+        """Broadcast accepted. `submitted_at` and `submitted_block` keep their first values."""
+        ...
+
+    async def mark_reverted(self, outbox_id: uuid.UUID, error: str, sentence: str) -> OutboxRecord:
+        """Receipt status 0: the decoded error name, and its timeline sentence (ADR-051)."""
+        ...
 
     async def mark_included(self, outbox_id: uuid.UUID, inclusion: Inclusion) -> OutboxRecord:
         """A receipt was seen. Status `included`; `confirmed` is the indexer's call."""
@@ -223,7 +270,7 @@ class OutboxRepository(Protocol):
     ) -> OutboxRecord: ...
 
     async def clear_inclusion(self, outbox_id: uuid.UUID) -> OutboxRecord:
-        """A reorg removed the block: back to `submitted`, with no block recorded."""
+        """A reorg removed the block: back to `submitted`, with no block, error or sentence."""
         ...
 
     async def record_attempt(
@@ -235,7 +282,10 @@ class ChainEventRepository(Protocol):
     """Canonical rows only, except `history_for_export`."""
 
     async def add(self, new: NewChainEvent) -> ChainEventRecord | None:
-        """Insert unless this exact log in this exact block is already recorded. None if it was."""
+        """Insert, or restore an invalidated row of this exact log in this exact block (ADR-055).
+
+        None if the row was already canonical.
+        """
         ...
 
     async def canonical_for_run(self, run_id: uuid.UUID) -> list[ChainEventRecord]: ...
@@ -255,6 +305,12 @@ class ChainEventRepository(Protocol):
         """Mark every canonical event at or above `from_block` non-canonical. Returns them."""
         ...
 
+    async def invalidate_blocks(
+        self, chain_id: int, contract_address: Address, block_hashes: Sequence[Digest], at: datetime
+    ) -> list[ChainEventRecord]:
+        """Mark every canonical event in one of these blocks non-canonical. Returns them."""
+        ...
+
     async def history_for_export(self, run_id: uuid.UUID) -> list[ChainEventRecord]:
         """Every row for the run, invalidated ones included. The export only."""
         ...
@@ -266,6 +322,10 @@ class BalanceSnapshotRepository(Protocol):
 
     async def invalidate_from_block(
         self, run_id: uuid.UUID, from_block: int
+    ) -> list[BalanceSnapshotRecord]: ...
+
+    async def invalidate_blocks(
+        self, run_id: uuid.UUID, block_hashes: Sequence[Digest]
     ) -> list[BalanceSnapshotRecord]: ...
 
     async def history_for_export(self, run_id: uuid.UUID) -> list[BalanceSnapshotRecord]: ...
@@ -306,6 +366,12 @@ class OperationRepository(Protocol):
     ) -> OperationRecord: ...
 
 
+class Transactions(Protocol):
+    """Anything that hands out units of work: `Database`, or a test's in-memory fake."""
+
+    def unit_of_work(self) -> AbstractAsyncContextManager[UnitOfWork]: ...
+
+
 class UnitOfWork(Protocol):
     """One database transaction, and every repository bound to it.
 
@@ -344,6 +410,7 @@ __all__ = [
     "RunRepository",
     "ScenarioRepository",
     "SignedActionRepository",
+    "Transactions",
     "TurnRepository",
     "UnitOfWork",
     "WalletRepository",

@@ -406,6 +406,8 @@ class OutboxRecord(_FromRow):
     effective_gas_price_wei: MinorAmount | None
     submitted_at: datetime | None
     included_at: datetime | None
+    submitted_block: int | None
+    sentence: str | None
 
 
 @dataclass(frozen=True, slots=True)

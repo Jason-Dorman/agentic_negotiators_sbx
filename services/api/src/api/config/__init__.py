@@ -1,6 +1,32 @@
 """Pydantic settings, loaded from the environment and injected; secrets arrive as references.
 
-Arrives in stage 2.3 of docs/build_plan.md; see docs/architecture.md section 3.2. The package exists
-from stage 2.1 so that the import contract in `.importlinter` can name it and be enforced from the
-first backend code.
+Built in stage 2.3 of docs/build_plan.md with the chain settings the relay and the indexer need; see
+docs/architecture.md sections 3.2 and 8. The bottom layer of the backend: it imports nothing from
+the rest of `api`.
 """
+
+from api.config.settings import (
+    FEE_BUMP_DENOMINATOR,
+    FEE_BUMP_NUMERATOR,
+    GWEI,
+    ChainSettings,
+    IndexerPolicy,
+    InvalidRunConfigError,
+    RelayPolicy,
+    SettingsError,
+    confirmation_threshold,
+    load_chain_settings,
+)
+
+__all__ = [
+    "FEE_BUMP_DENOMINATOR",
+    "FEE_BUMP_NUMERATOR",
+    "GWEI",
+    "ChainSettings",
+    "IndexerPolicy",
+    "InvalidRunConfigError",
+    "RelayPolicy",
+    "SettingsError",
+    "confirmation_threshold",
+    "load_chain_settings",
+]

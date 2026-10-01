@@ -202,7 +202,7 @@ Public configuration, timeline summary, and status. Never includes mandates, pri
   },
   "timeline": [
     {
-      "sequence": 1, "kind": "offer" | "accept" | "close" | "expire" | "abort" | "settle",
+      "sequence": 1, "kind": "offer" | "accept" | "close" | "expire" | "abort" | "settle" | "execution_failure",
       "actor": "buyer" | "seller" | "operator" | "anyone",
       "quote_amount_minor": "92000000", "valid_until_ts": 1758299300, "offer_hash": "0x…", "references_offer_hash": null,
       "reason_code": null, "reason": null,
@@ -375,7 +375,7 @@ Each event: `id: <cursor>` (monotonic integer per run), `event: <type>`, `data: 
 | `turn.signed` | `{ turn, party, kind, digest }` | signed action persisted |
 | `tx.status` | `{ digest, tx_hash, status, block_number, confirmations, explorer_url }` | each status transition |
 | `chain.event` | timeline entry (section 2.2) | canonical event indexed |
-| `chain.reorg` | `{ from_block, to_block, invalidated_digests: [] }` | reorg detected |
+| `chain.reorg` | `{ from_block, to_block, invalidated_digests: [] }` | reorg detected; appended by the indexer in the same transaction as the rewind ([ADR-058](decision_log.md)) |
 | `balances` | `{ stage, buyer: {…}, seller: {…}, block_number }` | snapshot taken |
 | `metrics` | run metrics object | after each turn |
 | `operation` | operation record | operation status change |
@@ -400,7 +400,11 @@ Rendering is done server-side once and stored on the timeline entry so UI, repla
 | abort | `Operator aborted the session (model failure).` |
 | execution failure | `Transaction reverted: SequenceMismatch. No trade occurred.` |
 
-Amounts are rendered from minor units with 6 decimals, trailing zeros trimmed.
+Amounts are rendered from minor units with 6 decimals, trailing zeros trimmed. The expiry time is the session's `expiresAt` in UTC; a close or abort names its reason code's string with underscores as spaces.
+
+Since stage 2.3 the renderer is `api.projection.TimelineSentences`, and the indexer applies it as it records each event, storing the sentence on the `chain_events` row ([ADR-024](decision_log.md)). `SessionOpened` has no sentence and is not a timeline entry. An **execution failure** — a transaction whose receipt has status 0, which emits no event — is a timeline entry of its own, of kind `execution_failure`, whose sentence is rendered when the indexer records the receipt and stored on the transaction's `tx_outbox` row, with the decoded protocol error as its `reason` ([ADR-051](decision_log.md)). Its actor is the party that signed the action it carried, or `operator` or `anyone` for a lifecycle transaction, and it follows every event of its block.
+
+A timeline entry's `tx.status` is the status of the backend's own outbox row for that transaction. For an event from a transaction the backend did not send — an expiry someone else called — it is `confirmed` at the run's threshold and `included` below it, and never `finalized`, which needs the outbox's finalized-head check.
 
 ---
 

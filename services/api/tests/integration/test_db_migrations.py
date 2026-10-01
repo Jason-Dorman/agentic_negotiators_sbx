@@ -112,7 +112,7 @@ def test_downgrade_leaves_nothing_behind_and_upgrade_works_again(scratch_url: st
     # And back up again: a downgrade that left an enum type behind would fail here, on CREATE TYPE.
     upgrade(scratch_url)
     assert asyncio.run(_query(scratch_url, "SELECT version_num FROM alembic_version")) == [
-        ("0001",)
+        ("0002",)
     ]
     downgrade(scratch_url)
 
@@ -135,7 +135,7 @@ def test_migrate_cli_upgrades_and_downgrades(
     monkeypatch.setenv("DATABASE_URL", scratch_url)
     assert main(["upgrade"]) == 0
     assert asyncio.run(_query(scratch_url, "SELECT version_num FROM alembic_version")) == [
-        ("0001",)
+        ("0002",)
     ]
     assert main(["downgrade", "base"]) == 0
     assert asyncio.run(_query(scratch_url, PUBLIC_OBJECTS)) == []

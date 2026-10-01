@@ -122,9 +122,9 @@ One FastAPI process with modules that could later be split. Module boundaries ar
 | `turns/` | Execute one turn per spec 9.2 | observation builder, agent client, relay, indexer |
 | `observation/` | Build the allowlisted observation from projection and run config | repositories, protocol schemas |
 | `agent_client/` | Authenticated HTTP client to an agent service instance | protocol schemas |
-| `relay/` | Nonce management, gas, signing raw transactions with the relay key, outbox write-then-broadcast, rebroadcast | web3 adapter, repositories |
-| `indexer/` | Receipt polling, log decoding, block-hash tracking, canonical flag, reorg detection and rebuild | web3 adapter, repositories |
-| `projection/` | Derive session view, timeline, balances from canonical events | repositories |
+| `relay/` | Nonce management, gas, signing raw transactions with the relay key, outbox write-then-broadcast, rebroadcast, recovery, gas replacement within a fee ceiling ([ADR-050](decision_log.md)) | web3 adapter, repositories |
+| `indexer/` | Receipt polling, log decoding, block-hash tracking, canonical flag, reorg detection and rebuild, confirmation depth and finality, terminal-event balances and settlement verification | web3 adapter, repositories |
+| `projection/` | Derive session view, timeline, balances and the economic outcome from canonical events; the timeline-sentence renderer the indexer is handed ([ADR-024](decision_log.md)) | repositories |
 | `validation/` | Validate setup: manifest, bytecode, chain ID, funds, allowances, signer, RPC, model availability | web3 adapter, agent client |
 | `evidence/` | Replay and export | repositories |
 | `metrics/` | Per-run and per-batch metrics | repositories |
@@ -132,7 +132,7 @@ One FastAPI process with modules that could later be split. Module boundaries ar
 | `db/` | SQLAlchemy models, repositories, Alembic migrations | |
 | `config/` | Pydantic settings; secrets loaded from environment; price table | |
 
-The relay holds its own gas-paying key and can never produce a participant signature. The indexer never writes economic outcomes from anything other than canonical events.
+The relay holds its own gas-paying key and can never produce a participant signature. The indexer never writes an economic outcome; it confirms and verifies the canonical terminal event, the projection derives the outcome from it, and the controller records it ([ADR-052](decision_log.md)). `relay`, `indexer` and `projection` are independent siblings under `.importlinter`, so the indexer declares the sentence renderer it needs as a protocol and the composition root hands it the projection's.
 
 ### 3.3 Agent service (`services/agent/`)
 
@@ -278,7 +278,7 @@ Only one action is pending per session. If the RPC response is missing after bro
 
 ### 5.3 Settlement
 
-The accepting side's agent service signs `Accept` referencing the active digest. The relay submits `acceptAndSettle`. Both transfers occur inside the contract call. The indexer verifies `AcceptanceRecorded`, `SettlementCompleted`, and two ERC-20 `Transfer` logs in the same receipt and only then marks the run economic outcome `settled`. Balance snapshots are taken at the settlement block.
+The accepting side's agent service signs `Accept` referencing the active digest. The relay submits `acceptAndSettle`. Both transfers occur inside the contract call. When the settlement reaches the run's confirmation threshold the indexer verifies `AcceptanceRecorded`, `SettlementCompleted`, and exactly two ERC-20 `Transfer` logs in the same receipt — the quote amount the accepted offer was signed for, buyer to seller, and the base amount, seller to buyer — and reports the check; only a passing check lets the controller record the outcome `settled` ([ADR-052](decision_log.md)). Balance snapshots are taken at the settlement block and the block before it.
 
 ### 5.4 Recovery after restart
 
@@ -305,7 +305,7 @@ Acceptance A13 covers crash after broadcast and before receipt persistence.
 
 ### 5.5 Reorganization
 
-The indexer stores block hash and number per event. On each poll it checks that stored block hashes for recent events still match the canonical chain. On mismatch it marks affected events non-canonical, invalidates projections and balance snapshots derived from them, sets the run to `PAUSED` with cause `reorg`, rebuilds from the last common block, reconciles pending outbox rows, and only then permits resume. Acceptance A14 simulates this on Anvil with snapshot and revert.
+The indexer stores block hash and number per event, per recorded inclusion in `tx_outbox` and per balance snapshot. On each poll, before it reads anything new, it checks that every stored block hash above the RPC's finalized head, for runs not yet `TERMINAL`, still matches the canonical chain ([ADR-053](decision_log.md)). A block the RPC fails to return is an outage, not a mismatch: the adapter raises and the poll fails, rather than inventing a reorg. On mismatch it marks every row whose block the chain no longer has non-canonical, clears those transactions' inclusions back to `submitted`, invalidates those balance snapshots, appends a `chain.reorg` run event for each affected run in the same transaction ([ADR-058](decision_log.md)), and reports the reorg; a row whose block comes back is made canonical again ([ADR-055](decision_log.md)); the projection is computed from canonical rows each time it is asked, so it has rolled back with nothing further to invalidate. The controller sets the run to `PAUSED` with cause `reorg` (stage 2.4), and the relay reconciles the cleared transactions — a transaction reverted away is neither mined nor pooled and its nonce is free, so the stored bytes are sent again — before resume is permitted. The log scan re-reads every block above the finalized head on each poll, so a reorg that removed nothing the backend had stored, and is therefore invisible to the hash check, still has its new logs read. Acceptance A14 simulates this on Anvil with snapshot and revert at confirmation threshold 2.
 
 ### 5.6 Replay and export
 
@@ -361,7 +361,7 @@ stateDiagram-v2
 
 ### 6.3 Transaction status (spec 9.3)
 
-`SUBMITTED` (broadcast accepted) → `INCLUDED` (receipt in a block) → `CONFIRMED` (threshold depth, canonical) → `FINALIZED` (block at or below RPC finalized head). `REVERTED` and `REPLACED` are terminal side states. Two confirmations are never labelled finality.
+`PENDING` (persisted, not yet accepted by a node) → `SUBMITTED` (broadcast accepted) → `INCLUDED` (receipt in a block) → `CONFIRMED` (threshold depth, canonical) → `FINALIZED` (block at or below RPC finalized head). `REVERTED` (receipt status 0), `REPLACED` (re-signed at a higher fee, [ADR-050](decision_log.md)) and `DROPPED` (another transaction at the same nonce was mined) are side states. A reorg moves `INCLUDED` or `CONFIRMED` back to `SUBMITTED`. A `REPLACED` original can still be the one mined, and then becomes `INCLUDED` while its successor is `DROPPED`. Two confirmations are never labelled finality.
 
 ## 7. Model integration
 
@@ -383,7 +383,7 @@ The model client lives only in the agent service and is wrapped behind `ModelCli
 
 ## 8. Cross-cutting concerns
 
-**Configuration.** Pydantic settings from environment. Secrets: relay key, operator key, participant keys or keystore paths, model API key, agent-service shared secret, database URL. `.env.example` in `infra/` lists every variable with a comment.
+**Configuration.** Pydantic settings from environment. Secrets: relay key, operator key, participant keys or keystore paths, model API key, agent-service shared secret, database URL. `.env.example` in `infra/` lists every variable with a comment. The backend's relay and operator keys arrive as references, `RELAY_KEY_REF` and `OPERATOR_KEY_REF`, in the grammar both services share (`negotiation_protocol.key_refs`, [ADR-049](decision_log.md)); `api.config.ChainSettings` reads the RPC URL and the relay and indexer policies (stage 2.3).
 
 `SEPOLIA_RPC_URL` points at an Alchemy application created for this project alone, not shared with the operator's other projects, so that rate-limit headroom and usage attribution belong to this project. The indexer polls every 4 s, which at one active run is well inside a free-tier compute-unit budget; the poll interval is configuration, and the runbook records what to change if the provider throttles.
 

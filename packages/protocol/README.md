@@ -10,7 +10,7 @@ TypeScript and Solidity so that a field renamed in one language fails the build 
 | `abi/` | ABI artefacts, **generated** from the Foundry build by `tools/export_abi.py` |
 | `fixtures/` | The EIP-712 digest fixture (**generated**) and the reason-code table |
 | `tools/` | The two generators, and `reconstruct.py`, which reads chain data only (A15) |
-| `src/negotiation_protocol/` | Python package, including the value objects and canonical hashing both services share |
+| `src/negotiation_protocol/` | Python package, including the value objects, canonical hashing and key-reference grammar (`key_refs`, ADR-049) both services share |
 | `src/index.ts` | TypeScript package (`@negotiation/protocol`) |
 | `tests/` | Fixture tests run by pytest and Vitest; the Solidity third lives in `contracts/test/unit/Fixtures.t.sol` |
 
