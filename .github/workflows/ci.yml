@@ -111,8 +111,9 @@ jobs:
   # the suite's local "PostgreSQL is down, skipping" into a failure, because a gate that skips
   # reports green without having run. Anvil is needed from stage 1: the reconstruction tests (A15)
   # start their own on a free port, run the real deploy script, drive a real negotiation and
-  # reconstruct it. They skip with a clear message when Foundry is absent, which is why the
-  # toolchain is installed here rather than left to chance.
+  # reconstruct it; from stage 2.2 the agent service's exit test does the same with two real agent
+  # processes. Without Foundry both skip locally, and under REQUIRE_INTEGRATION both fail, which is
+  # why the toolchain is installed here rather than left to chance.
   # ------------------------------------------------------------------------------------
   test-python:
     name: Test — Python
@@ -254,10 +255,10 @@ jobs:
       - run: uv run python infra/scripts/check_contract_coverage.py coverage.txt
 
   # The backend threshold is enforced from stage 2.1, with the first backend code; the agent's
-  # validator and signer join the rule list in stage 2.2. The assertion is a tested script, and a
-  # rule matching no file fails rather than passing vacuously.
+  # validator and signer from stage 2.2, with theirs. The assertion is a tested script, and a rule
+  # matching no file fails rather than passing vacuously.
   coverage-python:
-    name: Coverage — backend 85 percent of lines
+    name: Coverage — backend 85 percent of lines, agent validator and signer 100 percent of branches
     runs-on: ubuntu-latest
     env:
       REQUIRE_INTEGRATION: "1"
@@ -290,6 +291,8 @@ jobs:
       - run: >
           uv run python infra/scripts/check_python_coverage.py coverage.json
           --rule 'services/api/src/api/*:lines:85'
+          --rule 'services/agent/src/agent/validation/*:branches:100'
+          --rule 'services/agent/src/agent/signing/*:branches:100'
 
   # docs/test_strategy.md section 4.3. The snapshot covers the deterministic unit tests only:
   # fuzz and invariant gas figures move with the seed, so including them would make the gate

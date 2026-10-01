@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import ANVIL_KEYS, TEST_MANIFEST_DIR, run_deploy_script
+from anvil_chain import ANVIL_KEYS, TEST_MANIFEST_DIR, run_deploy_script
 from negotiation_driver import NegotiationDriver
 from reconstruct import TERMINAL_OUTCOMES, Reconstruction, Reconstructor
 from web3 import Web3

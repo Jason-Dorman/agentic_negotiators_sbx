@@ -5,6 +5,12 @@ more. It imports nothing from services or apps (docs/contributing.md section 1),
 optional extra so that installing it cannot give the agent service an RPC client (ADR-035).
 """
 
+from negotiation_protocol.agent_auth import (
+    AUTH_HEADER,
+    REQUEST_ID_HEADER,
+    agent_request_mac,
+    verify_agent_request,
+)
 from negotiation_protocol.eip712 import (
     ACCEPT_TYPE,
     CLOSE_TYPE,
@@ -67,6 +73,7 @@ __all__ = [
     "ABORT_REASON_CODES",
     "ACCEPT_TYPE",
     "ADDRESS_PATTERN",
+    "AUTH_HEADER",
     "CLOSE_REASONS",
     "CLOSE_REASON_CODES",
     "CLOSE_TYPE",
@@ -77,6 +84,7 @@ __all__ = [
     "MINOR_AMOUNT_PATTERN",
     "OFFER_TYPE",
     "PROTOCOL_VERSION",
+    "REQUEST_ID_HEADER",
     "SCHEMA_FILES",
     "UINT64_MAX",
     "UINT256_MAX",
@@ -97,6 +105,7 @@ __all__ = [
     "abi_dir",
     "abort_reason_code",
     "abort_reason_name",
+    "agent_request_mac",
     "canonical_json",
     "close_reason_code",
     "close_reason_name",
@@ -113,6 +122,7 @@ __all__ = [
     "to_hex32",
     "validate",
     "validator_for",
+    "verify_agent_request",
 ]
 
 # docs/protocol.md section 15. Frozen at release v0.1.

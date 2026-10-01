@@ -140,14 +140,19 @@ One codebase, two runtime instances (A and B) configured with role, mandate acce
 
 | Module | Single responsibility |
 |---|---|
-| `routes/` | Internal endpoints: provision, approve session, execute turn, health |
-| `policy/` | `Policy` protocol with `decide(observation) -> RawDecision`; `DeterministicPolicy`; `ModelPolicy` |
-| `model/` | Anthropic SDK client wrapper, prompt template versioning, structured output parsing, usage capture |
-| `budget/` | Pre-call check against call ceiling and spend ceiling using conservative token bound and price table |
-| `validation/` | `MandateValidator`: structural then economic validation, producing private feedback |
-| `signing/` | Construct EIP-712 message from validated state and sign with the party key |
+| `routes/` | The six internal endpoints of [api_contract.md](api_contract.md) section 6, each authenticated by HMAC over method, path and body before anything else ([ADR-041](decision_log.md)); strict request bodies; the error envelope |
+| `service` | The use cases behind the routes: provisioning, session approval, setup approval, turn, release, health. No HTTP, no key |
+| `turns/` | One turn: decide, validate, repair at most as provisioned, sign ([ADR-012](decision_log.md)); decision records |
+| `policy/` | `Policy` protocol with `decide(observation, repair) -> PolicyResponse`; `DeterministicPolicy`; `ModelPolicy` from stage 3 |
+| `model/` | Anthropic SDK client wrapper, prompt template versioning, structured output parsing, usage capture (stage 3) |
+| `budget/` | Pre-call check against call ceiling and spend ceiling using conservative token bound and price table (stage 3) |
+| `validation/` | `MandateValidator`: structural then economic validation, producing a validation code and private feedback ([protocol.md](protocol.md) section 11.1) |
+| `signing/` | Session approval (`configHash` recomputed, parties, amounts, expiry window); EIP-712 messages built from validated state and signed; the setup `approve` built from provisioned state ([ADR-040](decision_log.md)) |
 | `keys/` | Load the instance's root secret from environment or keystore, derive each run's key from it ([ADR-039](decision_log.md)); expose sign only |
-| `state/` | Run-scoped in-memory record of approved config and prior own decisions, backed by the controller's provisioning call |
+| `state/` | Run-scoped in-memory record of the provisioning, the approved session and the turns answered; a tombstone per released run |
+| `observation` | A typed, read-only view of a schema-validated observation, for the validator, the policies and the signer |
+| `consistency` | Refuse an observation that contradicts itself or the approved session — history order and statuses, offer digests, `expected_sequence`, `active_offer` — before any policy decides ([ADR-046](decision_log.md)) |
+| `settings`, `logs`, `main` | `AGENT_*` configuration; JSON logs with a redaction pass; the composition root, and `python -m agent` |
 
 The service has no database connection and no RPC connection. Its only outbound network dependency is the model provider, and only for `ModelPolicy`. The mandate reaches it once at provisioning, as a `keystore:` or `env:` key ref plus mandate values; it never reaches the other instance.
 
@@ -217,9 +222,9 @@ sequenceDiagram
     API->>CH: broadcast both approvals
     API->>CH: createSession(config) (operator key)
     CH-->>API: SessionOpened
-    API->>AA: approve_session(SessionOpened fields)
+    API->>AA: approve_session(SessionOpened fields, block time)
     AA-->>API: configHash match
-    API->>AB: approve_session(SessionOpened fields)
+    API->>AB: approve_session(SessionOpened fields, block time)
     AB-->>API: configHash match
     API-->>UI: operation complete, run RUNNING
 ```
@@ -321,7 +326,7 @@ stateDiagram-v2
     RUNNING --> PAUSED: pause / step complete
     PAUSED --> RUNNING: resume
     PAUSED --> PAUSED: step (one turn)
-    RUNNING --> RECOVERY_REQUIRED: unresolved RPC / nonce conflict
+    RUNNING --> RECOVERY_REQUIRED: unresolved RPC / nonce conflict /<br/>observation refused as inconsistent 5 times
     PAUSED --> RECOVERY_REQUIRED: reconcile failed
     RECOVERY_REQUIRED --> PAUSED: operator reconcile ok
     RUNNING --> TERMINAL
@@ -420,7 +425,7 @@ Exact versions were chosen at the start of stage 0, are pinned in `uv.lock`, `pn
 | Risk | Mitigation |
 |---|---|
 | Single backend process becomes a tangle | Import-boundary lint rule per module; each module has its own tests and no cross-module private imports |
-| Agent service state loss on restart | Provisioning is idempotent; the controller re-provisions from `mandate_versions` when a service reports an unknown run |
+| Agent service state loss on restart | Provisioning is idempotent and the key derivation reproduces the address; when a service reports a run `unprovisioned`, the controller re-provisions it from `mandate_versions` with the stored address, re-sends approve-session from the canonical `SessionOpened` event and its block's timestamp, and retries ([ADR-048](decision_log.md)) |
 | Clock skew between backend and chain | Always read `latest` block timestamp before computing `validUntil`; never use wall-clock for protocol time |
 | SSE clients miss events | Every event carries a monotonic cursor; reconnect with `Last-Event-ID` replays from `run_events` |
 | Model cost drift | Price table is operator-maintained config with a `last_verified` date shown in the UI |

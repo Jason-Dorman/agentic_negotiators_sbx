@@ -51,7 +51,7 @@
       "minimum": 0
     },
     "active_offer": {
-      "description": "The offer currently executable by its counterparty, or null when none stands.",
+      "description": "The offer currently executable by its counterparty, or null when none stands. An expired offer does not stand: once chain_time reaches its valid_until it is null here and `expired` in history (docs/protocol.md section 12, ADR-046).",
       "oneOf": [
         {
           "$ref": "#/$defs/activeOffer"
@@ -62,6 +62,7 @@
       ]
     },
     "history": {
+      "description": "Confirmed on-chain actions in ascending sequence order, beginning at 1 (docs/protocol.md section 12, ADR-046). The agent refuses an observation whose history is out of order, gapped, not alternating from the buyer, or whose offer digests do not hash from their own fields.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/historyEntry"

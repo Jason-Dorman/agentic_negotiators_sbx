@@ -322,6 +322,33 @@ Rules:
 
 The JSON schema is `packages/protocol/schemas/agent_decision.v1.json`.
 
+### 11.1 Validation codes
+
+The `MandateValidator` in each agent service checks every decision before anything is signed, and records which rule refused it in `decisions.validation_code`. The set is closed. Beside each code the agent sends private feedback, in words, back to the same policy for a repair and to no one else.
+
+| Code | Refused when |
+|---|---|
+| `schema_error` | The response is not an object, has no `decision`, has an `explanation` over 280 characters or not a string, has a `decision` that is not an object, has an `action` other than the three, or omits the action's field |
+| `extra_fields` | The envelope or the decision has a field the schema does not list — a model trying to set `valid_until` or name an `actor`, for instance |
+| `invalid_amount` | `quote_amount_minor` is not a base-10 integer string with no sign, point, exponent or leading zero, or is above `uint256` |
+| `zero_amount` | `quote_amount_minor` is `"0"` |
+| `invalid_offer_hash` | `offer_hash` is not `0x` and 64 hexadecimal characters |
+| `invalid_reason` | `reason` is not one of the three close reasons by name |
+| `not_your_turn` | An offer from a party that is not the next proposer under section 5, rule 3 |
+| `offer_limit_reached` | An offer when this party has no opportunity left or the session has recorded `maxOffers` offers |
+| `no_active_offer` | An accept with no active offer |
+| `self_acceptance` | An accept of the party's own offer |
+| `stale_offer_hash` | An accept of any digest but the active offer's |
+| `offer_expired` | An accept at or after the active offer's `validUntil` |
+| `above_reservation` | The buyer offers, or would accept, more than its reservation price |
+| `below_reservation` | The seller offers, or would accept, less than its reservation price |
+| `insufficient_balance` | The party's own leg of the trade exceeds its balance: the quote amount for the buyer, the base amount for the seller |
+| `inventory_floor` | The trade would leave the party below its `min_remaining_inventory_minor` of the token it gives up: the base token for the seller, the quote token for the buyer ([ADR-045](decision_log.md)) |
+
+The checks run in a fixed order, so a decision with several faults is refused for the first: structure, then for an offer the turn, the offer limit, the reservation, the balance and the floor; for an accept the active offer, self-acceptance, the digest, expiry, the reservation, the balance and the floor. An offer is checked as fully as an accept, because an active offer is authority for the counterparty to execute it ([ADR-004](decision_log.md)). A walk-away is never refused once it parses: leaving breaches no mandate, and Close is legal whoever's turn it is (section 5, rule 4).
+
+Two structural checks are deliberately stricter than the schema as Python's `jsonschema` evaluates it. Its `pattern` keyword uses `re.search`, under which `$` also matches before a trailing newline, so `"94000000\n"` satisfies the schema; the validator matches the whole string and refuses it. And the schema's 78-digit bound admits amounts above `uint256`, which the validator refuses.
+
 ## 12. Observation schema (allowlist)
 
 The only data a policy receives. Anything not listed here is forbidden (acceptance A12).
@@ -349,7 +376,9 @@ The only data a policy receives. Anything not listed here is forbidden (acceptan
 }
 ```
 
-`history` contains only confirmed on-chain actions. `my_previous_decisions` includes the agent's own rejected attempts and their private validation feedback; the counterparty's rejected attempts never appear anywhere in this structure. The `mandate` object is the agent's own; its schema is in [data_model.md](data_model.md).
+`history` contains only confirmed on-chain actions, in ascending sequence order beginning at 1. In practice every entry is an offer — every other action is terminal, and no observation is built after a session ends — and each carries all of its offer fields: the last is `active` until chain time reaches its `validUntil` and `expired` after, every earlier one `replaced`. `active_offer` is the last recorded offer while it stands and **null once it has expired**: an expired offer cannot be accepted (section 6), although it still decides whose turn it is (section 5, rule 3). `my_previous_decisions` includes the agent's own rejected attempts and their private validation feedback; the counterparty's rejected attempts never appear anywhere in this structure. The `mandate` object is the agent's own; its schema is in [data_model.md](data_model.md).
+
+The agent service checks an observation against itself and the session it approved before any policy decides — the history's order, alternation and statuses, every offer digest recomputed from the offer's own fields, `expected_sequence`, `offers_remaining_for_me` and `active_offer` — and refuses a contradiction with `observation_inconsistent` rather than sign an action the contract would revert ([ADR-046](decision_log.md), [api_contract.md](api_contract.md) section 6).
 
 The JSON schema is `packages/protocol/schemas/observation.v1.json`.
 
@@ -363,6 +392,9 @@ Normative restatement of spec 11.1 for implementers. `R` is the party's reservat
 - Otherwise, with own offer index `k` (0-based) and `n > 1`: `price = anchor + (R - anchor) * k / (n - 1)`. Buyer rounds down, seller rounds up, to whole minor units. With `n == 1`: offer `R`. Preserve `price >= 1`.
 - Clamp this policy's output to its own bound. Never clamp a model output.
 - With zero remaining opportunities and no acceptable incoming offer, or when offering is illegal: **walk_away** with `no_further_concession` (or `terms_unacceptable` when an incoming offer exists and is outside bound and no opportunities remain).
+- When the move the policy would otherwise make — accepting the incoming offer, or its scheduled offer — is refused for `insufficient_balance` or `inventory_floor`, and no other move remains: **walk_away** with `inventory_constraint` ([ADR-043](decision_log.md)). This takes precedence over the two reasons above, so a mandate that cannot trade is distinguishable from a price impasse.
+
+"Acceptable" and "illegal" are the `MandateValidator`'s verdicts (section 11.1): the policy asks the validator about each move before making it, so the baseline and the gate that signs agree on legality by construction and the baseline never needs a repair. The prices are computed exactly in integers — the buyer's `R (4(n-1) + k) / 5(n-1)` rounded down, the seller's `R (6(n-1) - k) / 5(n-1)` rounded up — and on the default scenario give buyer 80, 86.666666, 93.333333, 100 and seller 108, 102, 96, 90 mUSD.
 
 The policy is a baseline for comparison, not a claim of optimality.
 

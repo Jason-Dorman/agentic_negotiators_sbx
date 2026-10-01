@@ -27,7 +27,7 @@
 | Contract fuzz and invariant | Foundry fuzz, invariant handlers | `contracts/test/invariant/` | every commit (short), nightly (long) | < 2 min short |
 | Protocol fixtures | pytest + vitest + forge reading the same JSON | `packages/protocol/tests/` | every commit | < 10 s |
 | Python unit | pytest, fakes | `services/*/tests/unit/` | every commit | < 60 s |
-| Python integration | pytest, PostgreSQL (testcontainers or compose), Anvil | `services/api/tests/integration/` | every commit | < 5 min |
+| Python integration | pytest, PostgreSQL (testcontainers or compose), Anvil | `services/api/tests/integration/`, `services/agent/tests/integration/` | every commit | < 5 min |
 | Isolation and leakage | pytest, scanners over captured requests, logs, SSE, exports | `services/api/tests/isolation/` | every commit | < 1 min |
 | Web unit | vitest, React Testing Library | `apps/web/src/**/*.test.tsx` | every commit | < 60 s |
 | End-to-end browser | Playwright against local compose profile | `apps/web/e2e/` | on merge to main and before release | < 10 min |
@@ -41,7 +41,7 @@
 | A01 | Standard overlap scenario: settle or leave; any settlement respects both mandates and exact deltas | Integration + live model | `integration/test_a01_overlap.py` | Runs det/det automatically; model/model run is recorded evidence, asserted by the invariant checker over its export |
 | A02 | Deterministic policies settle a known feasible scenario end to end | Integration | `integration/test_a02_det_settlement.py` | Also the smoke test for the whole stack |
 | A03 | Buyer 100, seller 105: no settlement, proper terminal reason | Integration | `integration/test_a03_infeasible.py` | Assert `outcome_kind in (closed, expired)` and never `settled`; assert reason code recorded |
-| A04 | Out-of-bound model proposal refused; no broadcast | Unit (agent) + integration | `agent/tests/unit/test_validator.py`, `integration/test_a04_out_of_bound.py` | Fake model returns 85 for a seller with floor 90; assert no outbox row, one repair, then abort reason 2 |
+| A04 | Out-of-bound model proposal refused; no broadcast | Unit (agent) + integration | `services/agent/tests/unit/test_validator.py` and `test_turns.py` (stage 2.2), `integration/test_a04_out_of_bound.py` | Fake model returns 85 for a seller with floor 90; assert no outbox row, one repair, then abort reason 2 |
 | A05 | Counteroffer then accept of old offer rejected | Contract | `contracts/test/unit/Accept.t.sol` | `StaleOfferDigest` |
 | A06 | Duplicate signature/action and second settlement attempt | Contract + integration | `Replay.t.sol`, `integration/test_a06_duplicate.py` | Contract: `SequenceMismatch` / `SessionNotOpen`; app: outbox uniqueness reconciles as already complete |
 | A07 | Wrong chain, contract, session, configHash rejected | Contract | `Domain.t.sol` | Sign against a second deployment and a forged domain |
@@ -216,12 +216,19 @@ not list, inside the schema that declares itself that section's exhaustive form.
 
 ## 6. Agent service tests
 
-- `MandateValidator`: table-driven cases for every validation code: schema error, extra fields, non-integer amount, zero amount, below or above reservation, insufficient balance, inventory floor, wrong turn, offer limit, stale `offer_hash`, accept with no active offer, self-accept, invalid reason string. Each case asserts the private feedback text and that no signing occurred.
-- `DeterministicPolicy`: exact expected quotes for `maxOffers` in {1,2,3,8,32} for both sides; acceptance when incoming is within bound; walk-away when no opportunities remain; rounding direction; positive floor.
-- `ModelPolicy` with fake `ModelClient`: valid first attempt; invalid then valid repair; invalid twice → `model_failed`; timeout; `refusal` stop reason; `max_tokens` stop reason; provider error. Assert the repair message contains only that agent's feedback.
-- `BudgetGuard`: call ceiling; spend ceiling with a price table; unknown price → call refused unless operator sets `allow_unknown_price`; estimated versus reported separation.
-- `Signer`: reconstructs typed message from validated state only; refuses to sign when session approval is missing; digest matches fixture.
-- Internal API: HMAC rejection; provisioning idempotency; `approve-session` mismatch detection; `release` discards state.
+Stage 2.2 built the first five items below, in `services/agent/tests/`; `ModelPolicy` and
+`BudgetGuard` arrive with the model in stage 3.
+
+- `MandateValidator` (`unit/test_validator.py`): one table, `tests/support/agent_validation_cases.py`, with a row per way a decision can be refused — every code in [protocol.md](protocol.md) section 11.1, the boundaries beside each, and the order of checks where several apply. Each row asserts its code and its private feedback text word for word. `unit/test_turns.py` runs the same table through the turn executor and asserts that nothing was signed and the turn ended `model_failed` with `repair_exhausted`. The structural half is also checked against `agent_decision.v1.json` itself: every schema-valid response parses, and every structural refusal is one the schema makes too, except the two rows where the validator is knowingly stricter.
+- `DeterministicPolicy` (`unit/test_deterministic_policy.py`): exact expected quotes for `maxOffers` in {1,2,3,8,32} for both sides, worked by hand rather than recomputed; acceptance when incoming is within bound; walk-away when no opportunities remain, with each of the three reasons ([ADR-043](decision_log.md)); rounding direction; positive floor; clamping to its own bound; every decision it makes passes the validator.
+- `ModelPolicy` with fake `ModelClient` (stage 3): valid first attempt; invalid then valid repair; invalid twice → `model_failed`; timeout; `refusal` stop reason; `max_tokens` stop reason; provider error. Assert the repair message contains only that agent's feedback.
+- `BudgetGuard` (stage 3): call ceiling; spend ceiling with a price table; unknown price → call refused unless operator sets `allow_unknown_price`; estimated versus reported separation.
+- Signer (`unit/test_signing.py`): reconstructs the typed message from validated state only and refuses an unvalidated proposal at run time too; refuses without an approved session, at the session deadline, and with a key that is not the session's party; the offer, accept and close each reproduce the EIP-712 fixture's digest *and signature*; session approval names every differing field, recomputes `configHash` from the provisioned tokens, and enforces the expiry window of [ADR-044](decision_log.md); the setup approval is the role's token to the provisioned exchange for the provisioned allowance, with the gas bound of [ADR-042](decision_log.md).
+- `KeyHolder` (`unit/test_keys.py`): ADR-039's derivation recomputed from the ADR's own text; domain separation by role, chain and run; the rejection-sampling counter forced; both reference forms, and every way each can fail without echoing the secret; the exact public surface of the holder and the run signer, which cannot be pickled or copied.
+- Internal API (`unit/test_internal_api.py`, in process over ASGI): HMAC rejection, including a health check's MAC refused on `release` and a provisioning MAC refused on another run ([ADR-041](decision_log.md)); provisioning idempotency and re-provisioning after a restart; `approve-session` mismatch detection; `release` discards state and refuses the run from then on; a scan of every log line of a whole run for mandate values, secrets and bodies.
+- Observation consistency (`unit/test_consistency.py`, [ADR-046](decision_log.md)): observations built with real EIP-712 digests are accepted, and each kind of contradiction — order, gaps, a terminal kind, alternation, a missing offer field, a digest that does not hash from its fields, a status, too many offers, `expected_sequence`, `offers_remaining_for_me`, an `active_offer` omitted, expired, or not the last — is named by location; at the service and HTTP layers it is `observation_inconsistent` and the policy is never called.
+- The order of checks: one test per adjacent pair in [protocol.md](protocol.md) section 11.1's order, and the deterministic-policy scenario in which the order decides the signed close reason.
+- The stage 2.2 exit test (`integration/test_negotiation_on_anvil.py`): two agents started as real processes through `python -m agent`, one on an `env:` root and one on a `keystore:` root, driven over HTTP by a stand-in for the backend and the relay (`tests/support/agent_harness.py`), negotiate `default-overlap` and `infeasible-clone` on Anvil through the real contract. It asserts the exact sequence of moves, the settlement at 93.333333 mUSD and the buyer's Close with `terms_unacceptable`, that every signature recovers to the run's derived address and none to a root or the relay, that every digest equals the contract's own `hashOffer`, `hashAccept` or `hashClose`, fresh wallets per run, and that the reconstruction tool (A15) agrees with what the agents signed. A third run pushes chain time past an offer's `validUntil` before its counterparty acts, so the expired-offer path runs through a real observation: the seller counters at 96 instead of accepting, and the buyer accepts. Every line both processes wrote, start-up included, is searched for each one's root, shared secret and keystore password.
 
 ## 7. Backend tests
 
@@ -263,7 +270,7 @@ Live model runs are not deterministic and are not CI gates. They are **recorded 
 | Web unit | merge |
 | Playwright E2E | merge to main |
 | Gas snapshot regression | merge, override by decision-log entry |
-| Coverage: contracts 100 percent lines on `NegotiationExchange` (live from stage 1); backend 85 percent lines (live from stage 2.1); agent validator and signer 100 percent branches (stage 2.2) | merge |
+| Coverage: contracts 100 percent lines on `NegotiationExchange` (live from stage 1); backend 85 percent lines (live from stage 2.1); agent validator and signer 100 percent branches (live from stage 2.2) | merge |
 | Import boundaries (`lint-imports`, the contracts in `.importlinter`) | merge (live from stage 2.1) |
 | Protocol artefacts match their generators: committed ABIs and the EIP-712 fixture | merge |
 
@@ -284,8 +291,10 @@ would hand the step `tee`'s exit status.
 
 The contract half of the coverage gate is enforced from stage 1, when the contract exists, and
 checks all four figures `forge coverage` reports — lines, statements, branches and functions — at
-100 percent rather than lines alone. The other two thresholds are turned on with the code they
-measure: the backend's from stage 2.1, the agent's in stage 2.2. The Python assertion is
+100 percent rather than lines alone. The other two thresholds were turned on with the code they
+measure: the backend's in stage 2.1, the agent's in stage 2.2, where the rule covers every file in
+`agent/validation/` and `agent/signing/` — session approval and the setup approval included, because
+both are part of the signer's refusal to sign for anything but what it approved. The Python assertion is
 `infra/scripts/check_python_coverage.py`, tested like the contract one, and a rule whose glob matches
 no file fails rather than passing over nothing — the coverage version of `all([])`.
 
