@@ -41,6 +41,18 @@ class SqlRunRepository(SqlRepository, RunRepository):
         row = await self._one_or_none(select(Run).where(Run.id == run_id).with_for_update())
         return None if row is None else RunRecord.from_row(row)
 
+    async def with_open_sessions(self) -> list[RunRecord]:
+        rows = await self._all(
+            select(Run)
+            .where(Run.session_id.is_not(None), Run.state != RunState.TERMINAL)
+            .order_by(Run.created_at)
+        )
+        return [RunRecord.from_row(row) for row in rows]
+
+    async def get_by_session(self, session_id: SessionId) -> RunRecord | None:
+        row = await self._one_or_none(select(Run).where(Run.session_id == SessionId(session_id)))
+        return None if row is None else RunRecord.from_row(row)
+
     async def _update(self, run_id: uuid.UUID, **values: Any) -> RunRecord:
         statement = update(Run).where(Run.id == run_id).values(**values).returning(Run)
         return RunRecord.from_row(required(await self._write_scalar(statement), f"run {run_id}"))

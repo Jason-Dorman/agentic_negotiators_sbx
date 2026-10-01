@@ -18,10 +18,8 @@ The root itself never signs anything (ADR-039).
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, NoReturn, Protocol
 
 from eth_account import Account
@@ -29,9 +27,8 @@ from eth_account import Account
 from agent.keys.derivation import KeyDerivation, KeyRefError, derive_run_key
 from agent.keys.references import KEY_REF_FORMS, is_key_reference
 from negotiation_protocol import Address, Digest
-
-# The *name* of the variable that holds the password, not a password.
-PASSWORD_VARIABLE = "KEYSTORE_PASSWORD"  # noqa: S105  reason: a variable name
+from negotiation_protocol.key_refs import PASSWORD_VARIABLE as PASSWORD_VARIABLE
+from negotiation_protocol.key_refs import KeyReferenceError, resolve_key_reference
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,44 +121,11 @@ class RootKeyHolder:
 
 
 def _resolve(key_ref: str, environ: Mapping[str, str]) -> bytes:
-    # The grammar first: every message below names the reference's target, which is only safe
-    # once it is known to be a variable name or a path and not a pasted key (ADR-049).
+    # The grammar first: the shared resolver's messages name the reference's target, which is only
+    # safe once it is known to be a variable name or a path and not a pasted key (ADR-049).
     if not is_key_reference(key_ref):
         raise KeyRefError(f"a root key reference must be {KEY_REF_FORMS}; it is not repeated here")
-    scheme, _, target = key_ref.partition(":")
-    if scheme == "env":
-        return _from_environment(target, environ)
-    return _from_keystore(Path(target), environ)
-
-
-def _from_environment(name: str, environ: Mapping[str, str]) -> bytes:
-    value = environ.get(name, "")
-    if not value:
-        raise KeyRefError(f"the environment variable {name} is not set")
     try:
-        root = bytes.fromhex(value.removeprefix("0x"))
-    except ValueError:
-        root = b""
-    if len(root) != 32:
-        raise KeyRefError(f"the environment variable {name} is not 32 bytes of hex")
-    return root
-
-
-def _from_keystore(path: Path, environ: Mapping[str, str]) -> bytes:
-    password = environ.get(PASSWORD_VARIABLE, "")
-    if not password:
-        raise KeyRefError(
-            f"{PASSWORD_VARIABLE} is not set, so the keystore {path} cannot be opened"
-        )
-    try:
-        keystore = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as error:
-        raise KeyRefError(f"the keystore {path} cannot be read: {error.strerror}") from None
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        raise KeyRefError(f"{path} is not a keystore: it is not JSON text") from None
-    try:
-        return bytes(Account.decrypt(keystore, password))
-    except (ValueError, KeyError, TypeError):
-        raise KeyRefError(
-            f"the keystore {path} could not be decrypted with {PASSWORD_VARIABLE}"
-        ) from None
+        return resolve_key_reference(key_ref, environ)
+    except KeyReferenceError as error:
+        raise KeyRefError(str(error)) from None

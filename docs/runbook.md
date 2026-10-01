@@ -17,7 +17,7 @@ has actually exercised; nothing is written ahead of the code that makes it true.
 | 3. Keys and secrets; running an agent instance | Stage 0 (generation); stage 2.2 (loading, roots, running an agent) |
 | 4. Deploying the contracts and reading the manifest | Stage 1 |
 | 5. Reconstructing a session from chain data | Stage 1 |
-| 6. Recovering pending transactions | Stages 2.3 and 2.4 |
+| 6. Recovering pending transactions | Stage 2.3 (transactions); stage 2.4 (runs) |
 | 7. Funding a testnet demonstration | Stage 5 |
 | 8. Replay and export | Stages 4 and 5 |
 
@@ -451,12 +451,151 @@ they are tells you where to look.
 
 ## 6. Recovering pending transactions
 
-Stages 2.3 (the relay) and 2.4 (the run). The procedure lands in the same pull request as the
-recovery path it describes ([build_plan.md](build_plan.md) working agreements).
+The transaction half is stage 2.3's relay and indexer, described here. The run half — when recovery
+runs, and what moves a run to `RECOVERY_REQUIRED` — is the controller's, and is added in stage 2.4.
+Until then the controller is not built, so nothing in a running backend triggers these steps; they
+are exercised by the integration suite, which is where every claim below was checked.
+
+### What the outbox holds
+
+Every transaction the backend sends is signed, written to `tx_outbox` and committed **before** it
+is broadcast, and a retry sends the same stored bytes again — never a re-signed transaction and
+never a new decision ([architecture.md](architecture.md) section 5.2). So after any crash the
+database knows exactly what was about to be sent, and its hash. To see a run's transactions:
+
+```sh
+psql "$DATABASE_URL" -c "
+  SELECT kind, status, nonce, tx_hash, block_number, attempts, last_error, replaces_id IS NOT NULL AS replacement
+    FROM tx_outbox WHERE run_id = '<run id>' ORDER BY created_at"
+```
+
+(`DATABASE_URL` without its `+asyncpg` driver suffix for `psql`.)
+
+| Status | Meaning | Who moves it on |
+|---|---|---|
+| `pending` | Persisted, not yet accepted by a node — or the process died before recording that it was | The relay's recovery |
+| `submitted` | A node accepted it | The indexer, when a receipt appears; the relay, if it is stuck (below) |
+| `included` | Its receipt is in a block below the run's confirmation threshold | The indexer |
+| `confirmed` | At the threshold | The indexer, at the finalized head |
+| `finalized` | At or below the RPC's finalized head | Nobody: final |
+| `reverted` | Receipt status 0. `last_error` is the decoded protocol error and `sentence` the timeline text ([ADR-051](decision_log.md)) | Nobody; the controller requests an abort (spec 9.4) |
+| `replaced` | Re-signed at a higher fee; its successor's `replaces_id` points here ([ADR-050](decision_log.md)) | The indexer, if this original is mined after all |
+| `dropped` | Another transaction at the same sender and nonce was mined | Nobody |
+
+### What recovery does, transaction by transaction
+
+For each `pending` or `submitted` transaction of the run, the relay looks before it sends, in this
+order ([architecture.md](architecture.md) section 5.4):
+
+| Finding | Outcome | What it means for the operator |
+|---|---|---|
+| A receipt exists | `mined` | Nothing to do. The indexer records it on its next poll; nothing is sent again. This is the A13 case: a crash after the broadcast and before its record |
+| The node still holds it | `in_pool` | Nothing to do; it is recorded as `submitted` and left to be mined |
+| Neither, and its nonce is still free, and the node accepted the stored bytes | `rebroadcast` | They were sent again. Same bytes, same hash: if they had in fact been mined, the node would refuse them as a used nonce |
+| Neither, its nonce free, and the node **refused** the bytes | `refused` | **Act.** The result's `detail`, the row's `last_error` and the `relay.broadcast_refused` log line say why — usually the relay is out of test ETH. Sending again will not help ([ADR-057](decision_log.md)) |
+| Neither, and a transaction this outbox recorded at the same nonce was mined | `superseded` | The other one won — usually a replacement and its original. This one is marked `dropped`; the indexer records the winner on its next poll, and the signed action is never signed into a second transaction |
+| Neither, and its nonce was used by a transaction the outbox does **not** know | `nonce_conflict` | **Act.** Something else signed with that key. See below |
+| The RPC did not answer — before or during the resend | `unreachable` | **Act.** Nothing is known. An unresolved outage is `RECOVERY_REQUIRED`, never a no-deal result (FR-E6) |
+
+**A nonce conflict** means the relay key — or the operator key — was used outside this backend. Find
+the transaction that took the nonce:
+
+```sh
+cast nonce --rpc-url "$RPC" <relay address>          # how many the chain says are mined
+cast tx    --rpc-url "$RPC" <tx_hash from tx_outbox>  # "not found" for ours
+```
+
+and look at the sender's history on the explorer for the transaction at that nonce. The signed
+action this row carried was never executed. Do not reuse a relay or operator key in any other tool
+or process; the one-run-at-a-time design (ADR-019) assumes the backend is the key's only user. The
+way out of the run is an operator abort, which needs no participant key.
+
+**An unreachable RPC**: check the endpoint (`cast block-number --rpc-url "$RPC"`), and on Sepolia the
+provider's dashboard for throttling ([architecture.md](architecture.md) section 8). Recovery is
+safe to repeat once it answers: every step looks up before it sends. A call waits `RPC_TIMEOUT_S`
+and no longer — web3's own retries are off ([ADR-060](decision_log.md)) — and a rate limit is
+always treated as an outage, never as the node refusing a transaction. The indexer treats an
+unanswered block lookup the same way: the poll fails, and no reorg is inferred from it.
+
+### A stuck transaction, and the fee ceiling
+
+A transaction the relay or operator signed that is not included `RELAY_REPLACE_AFTER_BLOCKS` blocks
+(default 3) after its first broadcast is replaced automatically: the same nonce, recipient,
+calldata and gas, with both fee caps raised by an eighth. The original becomes `replaced` and the
+successor points back to it ([ADR-050](decision_log.md)). Two things can stop this:
+
+- **The ceiling.** No fee cap is ever above `RELAY_MAX_FEE_PER_GAS_WEI` (default 100 gwei), and a
+  bump that the ceiling would clip below the node's 10 percent minimum is not made. The relay then
+  waits. On Sepolia that means the network's base fee is above the ceiling: wait, or raise the
+  setting and restart the backend.
+- **A transaction an agent signed.** A participant's setup approval ([ADR-040](decision_log.md))
+  cannot be replaced: the relay does not hold that key. Rebroadcast still applies to it.
+
+To read what a stored transaction says — its nonce, gas and fee caps — without its signature:
+
+```sh
+uv run python -c "from api.relay import decode_raw_transaction; import sys; \
+  print(decode_raw_transaction(bytes.fromhex(sys.argv[1])))" <raw_tx hex from tx_outbox>
+```
+
+### An action the node predicted would revert
+
+The relay broadcasts it anyway, at `RELAY_FALLBACK_GAS_LIMIT` (default 500,000), so the contract
+decides and the failure has a receipt ([ADR-054](decision_log.md)). The row ends `reverted` with
+the protocol error in `last_error`, and the signed action `reverted` with the same name in
+`revert_error`. The error is read by replaying the transaction at its own block and then at the
+block before; `NoRevertData` means a replay reverted with nothing to decode (out of gas, say), and
+`Undetermined` that neither replay reverted at all, so the reason cannot be named
+([ADR-056](decision_log.md)). This costs relay test ETH; keep the relay funded. The reverted transaction's error
+says why: `SequenceMismatch` or `StaleOfferDigest` is a stale view of the session, `OfferExpired` or
+`SessionDeadlinePassed` is time running out, `ERC20InsufficientAllowance` a setup fault.
+
+### After a reorganisation
+
+The indexer detects it by block hash, marks the removed events non-canonical, moves the removed
+transactions back to `submitted` and invalidates the balance snapshots above the fork
+([ADR-053](decision_log.md)), and writes a `chain.reorg` run event for each affected run
+([ADR-058](decision_log.md)); recovery then sends the removed transactions' stored bytes again, and
+they land on the new fork. A reverted transaction removed this way loses its recorded error and its
+timeline entry with the block. If a removed block comes back, its rows are made canonical again
+rather than recorded twice ([ADR-055](decision_log.md)). To see the run event:
+
+```sh
+psql "$DATABASE_URL" -c "
+  SELECT cursor, data FROM run_events WHERE run_id = '<run id>' AND event_type = 'chain.reorg'"
+```
+
+The rows themselves: The removed events stay in `chain_events` with `canonical = false` and
+an `invalidated_at` time, and the export shows them: a reorg that happened is part of the record.
+To see one:
+
+```sh
+psql "$DATABASE_URL" -c "
+  SELECT event_name, block_number, block_hash, canonical, invalidated_at
+    FROM chain_events WHERE run_id = '<run id>' ORDER BY block_number, log_index, created_at"
+```
+
+A run already `terminal` is not watched ([Q20](open_questions.md), deferred to stage 5).
 
 ## 7. Funding a testnet demonstration
 
-Stage 5.
+Stage 5 completes this section. What is known now, from stage 2.3, is what the indexer costs on the
+RPC.
+
+**The Sepolia RPC must allow wide `eth_getLogs` ranges.** On every poll the indexer re-reads every
+block above the finalized head — about 64 to 100 blocks on Sepolia — in one `eth_getLogs`
+([ADR-053](decision_log.md)). Alchemy's free tier caps a call at 10 blocks, so with the default
+`INDEXER_LOG_CHUNK_BLOCKS=2000` nothing is indexed on it; Pay As You Go allows the range. Which
+plan and limit to use is [Q40](open_questions.md), still open.
+
+**What it costs on Pay As You Go**, at $0.525 per million compute units (Alchemy's PAYG FAQ, checked
+1 October 2026): about 220 compute units a poll, so about **$0.10 per hour of polling** at the
+Sepolia poll interval of 4 s; a 30-minute run about $0.05; the relay's own calls under $0.001 an
+action. Polling around the clock for a month would be about 145M compute units, about $75 — the
+stage 2.4 controller polls only while a run is active. **Set a usage limit** in the Alchemy
+dashboard (Billing Settings, as a compute-unit amount or its dollar value): usage stops at it and
+nothing beyond it is charged. $5 a month is about 9.5M compute units, around 45 hours of active
+polling.
 
 ## 8. Replay and export
 

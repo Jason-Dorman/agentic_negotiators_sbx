@@ -4,7 +4,7 @@
 |---|---|
 | **Version** | 0.1.0 |
 | **Date** | 25 September 2026 |
-| **Status** | Built in stage 2.1. The Alembic migrations in `services/api/src/api/db/migrations/` are authoritative, and this document is checked against them by `test_db_schema_matches_data_model.py` |
+| **Status** | Built in stage 2.1; migration 0002 added two `tx_outbox` columns in stage 2.3. The Alembic migrations in `services/api/src/api/db/migrations/` are authoritative, and this document is checked against them by `test_db_schema_matches_data_model.py` |
 | **Source** | Spec sections 9.1, 9.3, 11.3 |
 | **Related** | [protocol.md](protocol.md), [api_contract.md](api_contract.md), [architecture.md](architecture.md), [security_and_trust_boundaries.md](security_and_trust_boundaries.md) |
 
@@ -316,8 +316,10 @@ only `status` and `revert_error` move.
 | `block_hash` | `TEXT NULL` | |
 | `gas_used`, `effective_gas_price_wei` | `NUMERIC(78,0) NULL` | |
 | `submitted_at`, `included_at` | `TIMESTAMPTZ NULL` | |
+| `submitted_block` | `BIGINT NULL` | the chain head when the transaction was first broadcast; the relay's replacement trigger counts blocks from it ([ADR-050](decision_log.md)). `CHECK >= 0`. Migration 0002 |
+| `sentence` | `TEXT NULL` | an execution failure's timeline sentence, rendered once when the indexer records the status-0 receipt; the decoded error name is `last_error` ([ADR-051](decision_log.md)). Migration 0002 |
 
-Unique: `(sender, nonce, tx_hash)`, `(tx_hash)`. A partial unique index `(signed_action_id) WHERE status NOT IN ('replaced','dropped','reverted')` guarantees at most one live transaction per signed action; a gas replacement marks the original `replaced` before its successor is inserted, so the two are never live together. Indexes: `(run_id)`, `(status)`.
+Unique: `(sender, nonce, tx_hash)`, `(tx_hash)`. A partial unique index `(signed_action_id) WHERE status NOT IN ('replaced','dropped','reverted')` guarantees at most one live transaction per signed action; a gas replacement marks the original `replaced` before its successor is inserted, so the two are never live together. If the original is mined after all, the indexer drops the successor first and then records the original `included`. A transaction that reverted and is then removed by a reorg goes back to `submitted` with its `last_error` and `sentence` cleared, and its signed action back to `submitted` with no `revert_error`: they were facts about the removed block. Indexes: `(run_id)`, `(status)`.
 
 ### 3.11 `chain_events`
 
@@ -337,9 +339,9 @@ Unique: `(sender, nonce, tx_hash)`, `(tx_hash)`. A partial unique index `(signed
 | `canonical` | `BOOLEAN NOT NULL DEFAULT true` | |
 | `invalidated_at` | `TIMESTAMPTZ NULL` | set on reorg |
 | `confirmations_at_index` | `INTEGER NULL` | `CHECK >= 0` |
-| `sentence` | `TEXT NULL` | the timeline sentence, rendered once when the event is indexed and stored, so the live view, replay and export tell the same story ([ADR-024](decision_log.md), [api_contract.md](api_contract.md) section 4) |
+| `sentence` | `TEXT NULL` | the timeline sentence, rendered once when the event is indexed and stored, so the live view, replay and export tell the same story ([ADR-024](decision_log.md), [api_contract.md](api_contract.md) section 4). The indexer renders it with the projection's renderer, which it is handed by the composition root; null for `SessionOpened`, which is not a timeline entry, and for an event whose session's opening the indexer never saw |
 
-Unique: `(block_hash, tx_hash, log_index)`. Note the key includes `block_hash`, so the same log re-indexed after a reorg in a different block is a new row and the old one is marked non-canonical. `CHECK (canonical = (invalidated_at IS NULL))`: a row is canonical exactly when it has not been invalidated. A trigger refuses any `UPDATE` of the columns that are the evidence — `chain_id`, `contract_address`, `block_number`, `block_hash`, `tx_hash`, `log_index`, `event_name`, `decoded`. Indexes: `(run_id)`, `(session_id)`.
+Unique: `(block_hash, tx_hash, log_index)`. Note the key includes `block_hash`, so the same log re-indexed after a reorg in a different block is a new row and the old one is marked non-canonical. The same log seen again in the *same* block — a reorg that flipped back, a rewind that should not have happened — is the same row, made canonical again ([ADR-055](decision_log.md)); a rewind invalidates exactly the rows whose block hash the chain no longer has. `CHECK (canonical = (invalidated_at IS NULL))`: a row is canonical exactly when it has not been invalidated. A trigger refuses any `UPDATE` of the columns that are the evidence — `chain_id`, `contract_address`, `block_number`, `block_hash`, `tx_hash`, `log_index`, `event_name`, `decoded`. Indexes: `(run_id)`, `(session_id)`.
 
 ### 3.12 `balance_snapshots`
 
@@ -355,6 +357,15 @@ Unique: `(block_hash, tx_hash, log_index)`. Note the key includes `block_hash`, 
 | `canonical` | `BOOLEAN NOT NULL DEFAULT true` | |
 
 Unique: `(run_id, stage, party, token, block_hash)`.
+
+The indexer takes the stages that follow a terminal event when that event reaches the run's
+confirmation threshold, reading each party's base, quote and ETH balance at a block: `terminal` at
+the terminal event's block for every outcome, and for a settlement also `post_settlement` at the
+settlement block and `pre_settlement` at the block before it, so the difference between the two is
+exactly the settlement's effect. A reorg invalidates every snapshot in a block the chain no longer
+has; one at a block the reorg did not reach stays canonical, and one whose block comes back is made
+canonical again ([ADR-055](decision_log.md)). `pre_setup` and `post_setup` are the
+controller's, in stage 2.4.
 
 ### 3.13 `run_metrics`
 
@@ -382,7 +393,7 @@ The counters carry non-negative checks.
 
 ### 3.14 `run_events`
 
-The SSE log. Append-only: a trigger refuses `UPDATE` and `DELETE`.
+The SSE log. Append-only: a trigger refuses `UPDATE` and `DELETE`. The controller appends most of it (stage 2.4); the indexer appends `chain.reorg` itself, in the same transaction as the rewind it describes, so a reorg is never lost with a process ([ADR-058](decision_log.md)).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -460,7 +471,7 @@ Reason codes are stored as `SMALLINT` and rendered to strings via the tables in 
 
 ## 5. Economic outcome derivation
 
-`outcome_kind` and its reason are set only by the indexer from a canonical terminal event at the confirmation threshold:
+`outcome_kind` and its reason are set only from a canonical terminal event at the run's confirmation threshold. Three modules share the work ([ADR-052](decision_log.md)): the indexer confirms the terminal event at the threshold, snapshots the balances at its block and, for a settlement, verifies the receipt ([architecture.md](architecture.md) section 5.3); the projection derives the outcome below from canonical events; and the controller records it, with the run state it chooses — `terminal`, or `failed_setup` for a session aborted during setup — because the check constraints of section 3.3 couple the two:
 
 | Terminal event | `outcome_kind` | `outcome_actor` | `outcome_reason_code` |
 |---|---|---|---|
@@ -479,7 +490,7 @@ A run in `recovery_required` or `failed_setup` keeps `outcome_kind = pending`. M
 4. Every `decisions` row with `authorized = true` has exactly one `signed_actions` row, and `validation_ok = true`.
 5. No `run_events.data`, no `turns.observation` for party X, and no outbound request hash for party X contains any value from `mandate_versions` for the other party. Checked with a leakage scanner in the integration suite (A12).
 6. `chain_events` with `canonical = false` are excluded from every projection query. Enforced by a repository method that always filters, with no raw query allowed elsewhere.
-7. `runs.outcome_kind <> 'pending'` only when the terminal event's `chain_events` row is canonical with `confirmations_at_index >= threshold`.
+7. `runs.outcome_kind <> 'pending'` only when the terminal event's `chain_events` row is canonical with `confirmations_at_index >= threshold`. The indexer keeps `confirmations_at_index` current for every event above the finalized head ([ADR-053](decision_log.md)), so the comparison is with the event's depth, not its depth when first seen.
 
 ## 7. Data classification
 

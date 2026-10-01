@@ -2,12 +2,13 @@
 
 Decisions the governance documents could not settle from the spec. Each gets a provisional answer so work can proceed; the product owner confirms or overrides it, and the matching decision-log entry is updated when they do.
 
-One question is open, and deliberately so: the product owner deferred it to stage 5. Every other question raised so far has been answered, and the [Resolved](#resolved) table is the record. The reasoning behind the answers that needed discussion is kept below, because the reasoning is the part that matters when one of them is revisited.
+Two questions are open: Q20, which the product owner deferred to stage 5, and Q40, the Sepolia RPC plan, which stage 5 needs. Every other question raised so far has been answered, and the [Resolved](#resolved) table is the record. The reasoning behind the answers that needed discussion is kept below, because the reasoning is the part that matters when one of them is revisited.
 
 ## Open
 
 | # | Question | Status | Stage 2 behaviour until answered | Touches |
 |---|---|---|---|---|
+| Q40 | Which Alchemy plan the Sepolia profile runs on, and with what usage limit. Alchemy's free tier caps `eth_getLogs` at 10 blocks, so the indexer's re-read of the unfinalized window does not work on it with the default range. | Asked on 1 October 2026; the product owner is on Pay As You Go and wants no large bill. | Recommended: Pay As You Go, the default `INDEXER_LOG_CHUNK_BLOCKS` of 2,000, and an Alchemy usage limit of about $5 a month (about 9.5M compute units, around 45 hours of active polling at about $0.10 an hour), with the 2.4 controller polling only while a run is active. Reasoning in ADR-053's correction and runbook section 7. | ADR-053, runbook 7, `infra/.env.example`, build_plan stage 5 |
 | Q20 | A reorg deeper than the confirmation threshold can remove a terminal event after the run has reached `TERMINAL`, which [architecture.md](architecture.md) section 6.1 makes final. What should happen? Possible on Sepolia at threshold 2. | **Deferred to stage 5** by the product owner, 25 September 2026, where finalized-head tracking is verified against a real RPC. | `TERMINAL` stays final and the indexer stops watching a terminal run. A14 exercises a reorg *before* the threshold — confirmation threshold 2 on Anvil — which is the case [test_strategy.md](test_strategy.md) describes. The alternative put to the product owner: keep watching until the terminal block is finalized, and on a reorg move the run to `RECOVERY_REQUIRED` with its outcome reset to pending. | architecture 6.1 and 5.5, data_model 5 and 6, build_plan stage 5 |
 
 Add new questions here as they arise, with a provisional answer and the documents the answer touches, rather than deciding silently in code.
@@ -16,7 +17,7 @@ Add new questions here as they arise, with a provisional answer and the document
 
 # Reasoning behind the answers that needed discussion
 
-Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026; Q18 and Q19 on 25 September 2026; Q21 to Q24 on 30 September 2026, when building the agent service raised them; Q25 to Q28 the same day, when its adversarial review did.
+Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026; Q18 and Q19 on 25 September 2026; Q21 to Q24 on 30 September 2026, when building the agent service raised them; Q25 to Q28 the same day, when its adversarial review did; Q29 to Q33 the same day again, before stage 2.3's relay and indexer were written; Q34 to Q39 on 1 October 2026, when its adversarial review raised them.
 
 ## Q18: fresh participant wallets per run
 
@@ -114,3 +115,14 @@ Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026
 | Q26 | What the agent does with a self-contradictory observation, and the order of `history` | The agent refuses with `422 observation_inconsistent`; the controller rebuilds from the chain and retries up to five times, then `RECOVERY_REQUIRED`. History is ascending by sequence; an expired offer is not active. | ADR-046, protocol 12, api_contract 6 and 7, architecture 6.1 | 30 September 2026 |
 | Q27 | What bounds the setup approval's fees | The worst-case cost, gas limit times fee cap, at most `AGENT_SETUP_MAX_COST_WEI`, default 0.01 ETH. | ADR-047, ADR-042 corrected | 30 September 2026 |
 | Q28 | A release during a turn, and restart recovery | Release cancels the signature of a turn in flight; after an agent restart the controller re-provisions, re-approves the session from the canonical event, and retries. | ADR-048, api_contract 6, architecture 11 | 30 September 2026 |
+| Q29 | When the relay replaces a stuck transaction | Automatically: after `RELAY_REPLACE_AFTER_BLOCKS` (3) blocks without inclusion, both fee caps up 12.5 percent, never above `RELAY_MAX_FEE_PER_GAS_WEI` (100 gwei); at the ceiling it stops and waits. Never for a transaction an agent signed. | ADR-050, data_model 3.10, runbook 6 | 30 September 2026 |
+| Q30 | Where an execution failure's sentence lives, since a revert emits no event | A seventh timeline kind, `execution_failure`, with its sentence stored on the `tx_outbox` row. | ADR-051, data_model 3.10, api_contract 2.2 and 4, export schema | 30 September 2026 |
+| Q31 | Who writes the economic outcome, given that a constraint couples it to the run state | The controller, in stage 2.4. The indexer confirms and verifies the terminal event; the projection derives the outcome. | ADR-052, data_model 5 | 30 September 2026 |
+| Q32 | How long the indexer re-checks block hashes | Until the RPC's finalized head covers them, for runs not yet terminal. | ADR-053, architecture 5.5 | 30 September 2026 |
+| Q33 | What the relay does with an action the node predicts will revert | Broadcasts it at a fallback gas limit (500,000), so the contract decides and the failure is on chain. | ADR-054 | 30 September 2026 |
+| Q34 | An invalidated chain event seen again in the same block | Made canonical again (same row, same key); a rewind invalidates only rows whose block hash the chain no longer has. | ADR-055, data_model 3.11 and 3.12 | 1 October 2026 |
+| Q35 | A revert reason the replay cannot reproduce | Replay at the inclusion block, then its parent; `Undetermined` when neither reverts. | ADR-056, runbook 6 | 1 October 2026 |
+| Q36 | A node refusing a resend during recovery | A seventh outcome, `refused`, with the node's reason recorded and logged. | ADR-057, runbook 6 | 1 October 2026 |
+| Q37 | How reorg and terminal signals survive a crash | A `chain.reorg` run event written in the rewind's transaction; terminal events reported on every poll until the run is terminal. | ADR-058, api_contract 3 | 1 October 2026 |
+| Q38 | An invalid `confirmation_threshold` in a run's configuration | Refused, back to a person; one reading shared by indexer and projection. | ADR-059 | 1 October 2026 |
+| Q39 | web3's built-in retries | Off: `RPC_TIMEOUT_S` is the real limit. | ADR-060 | 1 October 2026 |

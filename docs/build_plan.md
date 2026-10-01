@@ -135,7 +135,7 @@ ones worth remembering:
 
 ## Stage 2: Deterministic end-to-end run
 
-**Status: in progress, 25 September 2026.** Split into five sub-stages on 25 September 2026 at the
+**Status: in progress, 25 September 2026; 2.1 to 2.3 complete.** Split into five sub-stages on 25 September 2026 at the
 product owner's direction. As one change the stage was too large to build or to review well: its
 estimate is 8 to 12 days, and this plan already names it the risk concentration, where the outbox,
 indexer, reorg and recovery bugs live. Each sub-stage is one branch and one pull request and ends in
@@ -384,16 +384,143 @@ accepts it, through an observation the agent checked for consistency.
 
 ### Stage 2.3: Relay, indexer and projection
 
+**Status: complete, 1 October 2026**, on branch `feature/relay-indexer-projection`, cut from `main`,
+and adversarially reviewed the same day (below). Every deliverable below is done and `make ci` is
+green: 1,200 Python tests (184 of them new), 115 Foundry tests, 31 Vitest tests, the
+backend at 98.8 percent of lines, the agent's validator and signer still at 100 percent of
+branches, and all six import contracts kept. As with 2.1 and 2.2, the pipeline itself has not yet
+run this branch on GitHub.
+
+Five questions the stage raised were put to the product owner before any of it was written, and
+answered on 30 September 2026: the relay replaces a stuck transaction automatically after three
+blocks, both fee caps up an eighth, never above a 100 gwei ceiling ([ADR-050](decision_log.md),
+Q29); an execution failure is a timeline entry of its own, its sentence stored on the outbox row
+([ADR-051](decision_log.md), Q30); the controller of 2.4 records the economic outcome, from what the
+indexer confirms and the projection derives ([ADR-052](decision_log.md), Q31); the indexer re-checks
+block hashes until the RPC's finalized head covers them ([ADR-053](decision_log.md), Q32); and an
+action the node predicts will revert is still broadcast, at a fallback gas limit, so the contract
+decides ([ADR-054](decision_log.md), Q33).
+
 **Deliverables**
-- `chain`: the web3 adapter behind a thread executor, ABI loading, and decoding of the seven events
-  and the twenty-three custom errors.
-- `relay`: the durable outbox — persist before broadcast, serialized relay nonces, rebroadcast of
-  the stored raw transaction, and gas replacement linked by `replaces_id`.
-- `indexer`: receipt polling, a log scan from the manifest's `start_block`, confirmation depth, the
-  finalized head, block-hash tracking, reorg detection, and rebuild from the last common block.
-- `projection`: the session view, the timeline with each sentence rendered once and stored
-  ([ADR-024](decision_log.md)), and balance snapshots.
-- Runbook section 6, "Recovering pending transactions", for the relay.
+- **done** — `chain`: `ChainAdapter`, with `Web3ChainAdapter` running web3's blocking calls in a
+  worker thread and translating its failures into three — unreachable, refused, reverted — at the
+  boundary; frozen values upward, never web3 types. `ExchangeCodec` decodes the seven events only
+  from the exchange's address and `Transfer` only from the two tokens', every protocol error and the
+  tokens' own, and encodes each signed action from its stored typed message by the ABI's own field
+  names.
+- **done** — `relay`: persist before broadcast; relay nonces taken from the lease, the operator's
+  from the chain and the outbox; a second submission resumes the first transaction and a lost insert
+  race resumes the winner's; recovery that looks up by hash and nonce before it sends, with six
+  distinguishable outcomes; gas replacement linked by `replaces_id` (ADR-050); the fallback gas limit
+  (ADR-054); agent-signed setup approvals relayed by their own bytes, sender and nonce read from them.
+  Keys load by reference into a signer that exposes signing only.
+- **done** — `indexer`: the reorg check first, against every stored block hash above the finalized
+  head (ADR-053); receipts, with a revert replayed against the parent block and decoded; the log scan
+  from `start_block`, re-reading the unfinalized window on every poll; confirmation depth to the
+  run's threshold and finality at the RPC's finalized head; at a terminal event, balance snapshots
+  and, for a settlement, the receipt verification of architecture 5.3. It reports; it writes no
+  outcome and moves no run (ADR-052).
+- **done** — `projection`: the session view, mirroring `getSession`; the timeline, with each
+  sentence rendered once by `TimelineSentences` — which the indexer is handed, the two being
+  independent siblings under `.importlinter` — and stored ([ADR-024](decision_log.md)); balances;
+  and the outcome the canonical terminal event supports.
+- **done** — Runbook section 6, "Recovering pending transactions", for the relay and the indexer.
+- **done**, beyond the list — migration 0002 (`tx_outbox.sentence`, `tx_outbox.submitted_block`);
+  `api.config` with the chain settings and the relay and indexer policies; and the key-reference
+  grammar of ADR-049 moved into `negotiation_protocol.key_refs`, now that the backend holds keys by
+  reference too.
+
+**Confirmed by mutation, not by coverage.** Forty-one deliberate breakages were applied one at a
+time, each run against the tests aimed at it and counted only when a test *failed* rather than
+errored, and the tree was restored and checked by content hash after each. All forty-one were
+killed. In the relay: an already-sent transaction not recognised, recovery that skips the receipt
+lookup, a consumed nonce rebroadcast over, a lost insert race raised as an error, the replacement
+trigger moved by one block, the original not marked `replaced`, a predicted revert not broadcast, a
+pending row never re-sent, the action left at `signed`, a superseded sibling not recognised, an
+agent-signed transaction replaced with the relay's key, a presigned sender taken from the caller. In
+the fees: a quarter for an eighth, the ceiling ignored, the node's 10 percent unchecked, no gas
+margin. In the indexer: the reorg check off, block presence checked without the hash, inclusions not
+cleared, snapshots surviving a reorg, receipt status ignored, siblings not dropped, the threshold and
+the finalized boundary each moved by one, terminal runs still watched, calldata on every event, the
+pre-settlement snapshot at the settlement block, depth never updated, events not attributed to runs,
+the scan cursor never rewound, a revert not replayed. One in the settlement check (the quote leg held
+to the event's amount), five in the projection and four in the codec.
+
+**What building it found, which the next sub-stages need.**
+
+1. **A reorg the hash check cannot see.** The first indexer rewound its log scan only when a stored
+   row's block hash changed. A reorg that removed nothing this backend had stored left the cursor
+   past heights the new fork had refilled, so a third party's expiry landing there would never have
+   been read. Found while planning the mutations, before any ran: the scan now re-reads everything
+   above the finalized head on every poll, and a test reverts blocks that hold nothing of ours and
+   then expects the expiry.
+2. **The ABI declares more than the protocol.** OpenZeppelin's `EIP712` adds `EIP712DomainChanged`;
+   decoded from the ABI, it would have reached `chain_events` with no `sessionId`. The codec decodes
+   the protocol's seven events and nothing else.
+3. **A mined duplicate and a nonce conflict look the same to the node.** Sending bytes that were
+   already mined is refused as "nonce too low", exactly as a different transaction at a used nonce
+   is; only a receipt lookup by hash tells them apart, so the relay does one before it believes
+   either. Anvil calls a pooled duplicate "transaction already imported", geth "already known".
+4. **Anvil cannot simulate a cheap transaction stuck in the pool**: it evicts one whose fee cap
+   falls below the base fee. The tests hold a transaction out of blocks with a block gas limit below
+   its gas instead — and a replacement must be sent after the limit is restored, or the node refuses
+   it as exceeding the block. `evm_revert` drops a reverted-away transaction from the pool entirely,
+   which is why recovery after a reorg sends the stored bytes again. Anvil's finalized head trails
+   its head by 64 blocks.
+5. **Above `db`, import its interface modules, not the package.** `api.db`'s `__init__` imports
+   `Database` and so SQLAlchemy, and `sessions-stay-in-db` counts that transitively; the first relay
+   imported `api.db` and broke the contract.
+6. **Three tests did not test what they were named for**, and contributing.md section 3 now says so:
+   a "race" that never raced until a barrier forced it; a reorg test whose snapshot postdated what it
+   reverted, now with a control; and a recovery path that marked a pooled transaction `submitted`
+   while leaving its action at `signed`. Coverage, which marked a few lines after an `await` as
+   missing although they ran, was a question to check rather than a verdict.
+
+#### The adversarial review, 1 October 2026
+
+Six lenses over the change set — claims against reality, the relay and its recovery, the indexer and
+reorgs, the projection and the evidence, the adapter, codec, settings and migration, and vacuity —
+each in its own copy of the tree with its own database, then two independent refutation attempts per
+finding, one on truth and one on impact: 36 agents in all. 49 candidates merged to 34 distinct; the
+14 most severe were verified, and 10 survived both refutations, 4 were refuted, and 20 were left
+open over the verification cap. Six of its questions went to the product owner and were answered on
+1 October 2026 ([ADR-055](decision_log.md) to [ADR-060](decision_log.md), Q34 to Q39); a seventh,
+the Sepolia RPC plan, is open as [Q40](open_questions.md). Every confirmed finding is fixed in this
+change set, and so are the open ones that were defects rather than missing tests. Each fix was then
+undone on its own and the test aimed at it shown to fail — 23 of them, all killed, one only after
+its test was corrected to put the expiry in the inclusion block itself. The ones that mattered:
+
+- **One RPC error looked like a reorg, and the evidence never came back.** The adapter returned
+  None for a block whenever the RPC failed, the indexer read None as a removed block, and the rewound
+  rows could not become canonical again because the rescan's insert collided with them and did
+  nothing. One "header not found" from a hosted RPC would have emptied a run's view with the chain
+  unchanged. The adapter now raises unless the height is above the head, every failure leaves it as
+  one of three kinds, and a row seen again in its unchanged block is restored ([ADR-055](decision_log.md)).
+- **Recovery could lead to a second transaction for one action.** After recovery dropped a successor
+  as superseded, a retried submission found no live row and signed the action afresh, and the next
+  poll then failed for every run on the unique index. A signed action is now signed into one
+  transaction, once.
+- **One run's bad records stopped the indexer for all of them**, through a bare `next()`; such a run
+  is now a reported `RunProblem`. **Recovery reported a resend that timed out or was refused as a
+  rebroadcast**; it now says `unreachable` or `refused` ([ADR-057](decision_log.md)). **A reorg and a
+  terminal event were reported once, in memory**; a reorg is now a run event written with the rewind
+  and a terminal event is reported every poll ([ADR-058](decision_log.md)). **Depth stopped growing
+  once an event passed the finalized head between polls**, so an outcome at threshold 2 could never
+  be derived; a watched run's events are now kept current at any height.
+- Smaller, each with its test: deadline reverts were recorded as `NoRevertData`
+  ([ADR-056](decision_log.md)); web3's hidden retries made a 10 s timeout about 52 s
+  ([ADR-060](decision_log.md)); an invalid threshold was silently defaulted by the indexer
+  ([ADR-059](decision_log.md)); a reorged-away revert kept its error and its timeline entry; an
+  agent-signed approval's failure was attributed to the operator, and a lifecycle failure carried
+  the run's last sequence; pre-signed bytes for another chain or unreadable bytes were persisted;
+  narrow integers overflowed as `eth_abi` errors; an invalid key value escaped as a bare
+  `ValueError`; and ADR-053's claim that the re-read fitted a free-tier budget was false.
+- **The tests were weaker than the 41 mutations suggested.** Reviewers ran about 150 further
+  mutations and roughly half survived; at least fifteen removed documented behaviour with the suite
+  green, among them the outbox leg of the reorg check, the threshold gate on terminal reports, the
+  operator's nonce floor and the "nonce too low only with a receipt" rule — and the A06 race test,
+  which still passed with no race. Each of those has a test now, shown to fail with the behaviour
+  removed.
 
 **Exit condition:** against Anvil and PostgreSQL, signed actions submitted through the relay are
 indexed as canonical events and projected into the session view and timeline. A relay stopped
@@ -402,6 +529,20 @@ second one (A13 at the chain layer); a duplicate submission of a confirmed actio
 already complete with no extra transfer (A06); and an `evm_snapshot`/`evm_revert` reorg at
 confirmation threshold 2 marks the removed events non-canonical and rolls the projection back (A14
 at the chain layer).
+
+**Met**, by `services/api/tests/integration/test_chain_negotiation.py`, `test_chain_recovery.py` and
+`test_chain_reorg.py`. A deterministic-style negotiation — 80, a counter at 96, accepted — settles
+through the relay: its session view equals the contract's `getSession` field by field, its timeline
+reads "Buyer offers 80 mUSD for 10 mASSET.", "Seller counters at 96 mUSD for 10 mASSET.", "Buyer
+accepts 96 mUSD for 10 mASSET.", "Settled: 10 mASSET to buyer, 96 mUSD to seller.", every entry and
+the session validate against the export schema, the balance deltas are exactly the two signed legs,
+and the reconstruction tool agrees. A relay killed right after the node accepted an acceptance is
+recovered by a new relay that sends nothing: one transaction, one settlement. A second submission of
+the settled acceptance returns its confirmed transaction; a second row for its digest is refused by
+the database; two racing submitters produce one transaction; the same signature relayed by an
+outsider reverts with no transfer. An offer indexed at depth 1 under threshold 2, then reverted
+away, is marked non-canonical, its inclusion cleared and the projection emptied; recovery sends its
+stored bytes again and it is re-indexed, canonical, in a new block, and confirmed at depth 2.
 
 ### Stage 2.4: Run controller and turns
 
@@ -419,6 +560,26 @@ at the chain layer).
   then move the run to `RECOVERY_REQUIRED`; on `unprovisioned` after an agent restart, re-provision
   with the stored address, re-send approve-session from the canonical `SessionOpened` event and its
   block's timestamp, and retry ([ADR-048](decision_log.md)).
+- The obligations the relay, indexer and projection of 2.3 place on the controller:
+  - write `runs.session_id` **before** `createSession` is broadcast, because the indexer attributes
+    each event to its run by session id as it records it;
+  - record the economic outcome ([ADR-052](decision_log.md)) — the projection's derived `Outcome`,
+    once the indexer reports the terminal event confirmed, and for a settlement only with a passing
+    settlement check — choosing `terminal` or `failed_setup`;
+  - on a `chain.reorg` run event the controller has not yet acted on — the indexer writes it in the
+    rewind's own transaction ([ADR-058](decision_log.md)) — pause the run with cause `reorg` and run
+    `relay.reconcile` before resume is permitted; on a `nonce_conflict`, `unreachable` or `refused`
+    reconciliation ([ADR-057](decision_log.md)), and on a poll report's `RunProblem`, move the run
+    to `RECOVERY_REQUIRED`; a poll that raises `RpcUnavailableError` is an outage, not a result;
+  - refuse, in the setup validator, a run whose `confirmation_threshold` is not an integer of at
+    least 1 ([ADR-059](decision_log.md));
+  - schedule `indexer.poll` every `INDEXER_POLL_INTERVAL_S` and `relay.replace_stuck` with it, and
+    `relay.reconcile` at start-up, under the run's lease, which the relay needs for relay nonces;
+  - append the `tx.status`, `chain.event` and `balances` run events from the poll reports — the
+    indexer writes only `chain.reorg`; `TerminalConfirmed` is repeated on every poll until the run is
+    terminal, so recording the outcome is idempotent work, not a one-shot message;
+  - after an execution failure, abort (spec 9.4): `signed_actions (run_id, sequence)` is unique
+    across every status, so a reverted action's sequence is not reused within the run.
 - Runbook section 6 extended to run-level recovery.
 
 **Exit condition:** driven in-process through the controller, A02 settles and A03 ends in a close,

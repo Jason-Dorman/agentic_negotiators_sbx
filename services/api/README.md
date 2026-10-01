@@ -13,7 +13,7 @@ switched on after the fact.
 | Module | Stage | State |
 |---|---|---|
 | `db/` | 2.1 | Models, the initial migration, repositories behind protocols, the unit of work |
-| `chain/`, `relay/`, `indexer/`, `projection/`, `config/` | 2.3 | Packages only |
+| `chain/`, `relay/`, `indexer/`, `projection/`, `config/` | 2.3 | The web3 adapter and codec, the durable outbox, the indexer, the projection, the chain settings |
 | `observation/`, `agent_client/`, `validation/`, `turns/`, `controller/` | 2.4 | Packages only |
 | `evidence/`, `metrics/`, `routes/` | 2.5 | Packages only |
 
@@ -42,6 +42,45 @@ migrated database with a hand transcription of the document; `test_db_migrations
 autogenerate comparison between the models and the migration and checks that the downgrade leaves
 nothing behind; `test_db_constraints.py` attempts everything the schema must refuse and asserts each
 refusal by constraint name.
+
+## The chain (`chain/`, `relay/`, `indexer/`, `projection/`)
+
+Composed the way the stage 2.4 controller will compose them — `tests/support/api_chain.py`
+`Backend` is the reference:
+
+```python
+codec = ExchangeCodec(
+    deployment.exchange_address, deployment.base_token_address, deployment.quote_token_address
+)
+chain = Web3ChainAdapter(settings.chain_rpc_url, timeout_s=settings.rpc_timeout_s)
+relay = Relay(
+    database,
+    chain,
+    codec,
+    chain_id=deployment.chain_id,
+    holder=process_id,
+    relay_signer=LocalTransactionSigner.from_reference(settings.relay_key_ref, os.environ, "relay"),
+    operator_signer=LocalTransactionSigner.from_reference(
+        settings.operator_key_ref, os.environ, "operator"
+    ),
+    policy=settings.relay_policy(),
+)
+indexer = Indexer(
+    database, chain, codec, deployment, TimelineSentences(), policy=settings.indexer_policy()
+)
+
+await relay.submit_action(run_id, signed_action_id)  # persist, then broadcast the stored bytes
+report = await indexer.poll()  # reorgs, receipts, logs, depth, terminal
+projection = await Projector(database, default_threshold=settings.confirmation_threshold).project(
+    run_id
+)  # session view, timeline, balances, outcome
+await relay.reconcile(run_id)  # after a restart or a reorg
+await relay.replace_stuck(run_id)  # ADR-050
+```
+
+Upper layers import `api.db.records`, `api.db.enums`, `api.db.errors` and `api.db.protocols`
+directly, never the `api.db` package: its `__init__` imports `Database` and therefore SQLAlchemy,
+which `sessions-stay-in-db` forbids outside `db/`, transitively. Tests may import `api.db`.
 
 ## Tests
 

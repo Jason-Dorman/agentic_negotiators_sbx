@@ -153,7 +153,8 @@
       "enum": ["offer", "accept", "close"]
     },
     "timelineKind": {
-      "enum": ["offer", "accept", "close", "expire", "abort", "settle"]
+      "description": "The six chain-event kinds, and `execution_failure` for a transaction whose receipt has status 0: it emitted no event, so it is a timeline entry of its own, with its sentence stored on its outbox row (ADR-051).",
+      "enum": ["offer", "accept", "close", "expire", "abort", "settle", "execution_failure"]
     },
     "run": {
       "type": "object",

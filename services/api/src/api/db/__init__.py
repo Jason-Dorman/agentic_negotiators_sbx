@@ -33,7 +33,7 @@ from api.db.errors import (
     NotFoundError,
     PersistenceError,
 )
-from api.db.protocols import UnitOfWork
+from api.db.protocols import Transactions, UnitOfWork
 from api.db.records import (
     BalanceSnapshotRecord,
     ChainEventRecord,
@@ -112,6 +112,7 @@ __all__ = [
     "SignedActionRecord",
     "SnapshotStage",
     "TokenRole",
+    "Transactions",
     "TurnRecord",
     "TurnState",
     "TxKind",

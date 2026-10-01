@@ -131,6 +131,17 @@ class SqlSignedActionRepository(SqlRepository, SignedActionRepository):
         )
         return [SignedActionRecord.from_row(row) for row in rows]
 
+    async def reset_to_submitted(self, action_id: uuid.UUID) -> SignedActionRecord:
+        """A reorg removed the block that included it: back to `submitted`, revert error cleared."""
+        statement = (
+            update(SignedAction)
+            .where(SignedAction.id == action_id)
+            .values(status=ActionStatus.SUBMITTED, revert_error=None)
+            .returning(SignedAction)
+        )
+        row = required(await self._write_scalar(statement), f"signed action {action_id}")
+        return SignedActionRecord.from_row(row)
+
     async def update_status(
         self, action_id: uuid.UUID, status: ActionStatus, revert_error: str | None = None
     ) -> SignedActionRecord:

@@ -10,15 +10,17 @@ projection test forbids a projection from calling.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import aliased
 
-from api.db.enums import TX_STATUSES_NOT_LIVE, TxStatus
-from api.db.models import BalanceSnapshot, ChainEvent, OutboxTx
+from api.db.enums import TX_STATUSES_NOT_LIVE, RunState, TxStatus
+from api.db.models import BalanceSnapshot, ChainEvent, OutboxTx, Run
 from api.db.protocols import BalanceSnapshotRepository, ChainEventRepository, OutboxRepository
 from api.db.records import (
     BalanceSnapshotRecord,
@@ -34,6 +36,16 @@ from negotiation_protocol import Address, Digest, SessionId
 
 #: Statuses recovery still has to reconcile (docs/architecture.md section 5.4).
 UNFINISHED_TX_STATUSES = (TxStatus.PENDING, TxStatus.SUBMITTED, TxStatus.INCLUDED)
+
+#: A transaction in one of these, with no block, may still be mined: a `replaced` original can win
+#: the race against its own replacement, and a row recovery `dropped` as superseded can turn out,
+#: after a reorg, to be the one that lands.
+AWAITING_RECEIPT_STATUSES = (
+    TxStatus.PENDING,
+    TxStatus.SUBMITTED,
+    TxStatus.REPLACED,
+    TxStatus.DROPPED,
+)
 
 
 class SqlOutboxRepository(SqlRepository, OutboxRepository):
@@ -74,6 +86,58 @@ class SqlOutboxRepository(SqlRepository, OutboxRepository):
         )
         return None if row is None else OutboxRecord.from_row(row)
 
+    async def for_signed_action(self, signed_action_id: uuid.UUID) -> list[OutboxRecord]:
+        rows = await self._all(
+            select(OutboxTx)
+            .where(OutboxTx.signed_action_id == signed_action_id)
+            .order_by(OutboxTx.created_at)
+        )
+        return [OutboxRecord.from_row(row) for row in rows]
+
+    async def nonce_group(self, sender: Address, nonce: int) -> list[OutboxRecord]:
+        rows = await self._all(
+            select(OutboxTx)
+            .where(OutboxTx.sender == Address(sender), OutboxTx.nonce == nonce)
+            .order_by(OutboxTx.created_at)
+        )
+        return [OutboxRecord.from_row(row) for row in rows]
+
+    async def awaiting_receipt(self) -> list[OutboxRecord]:
+        sibling = aliased(OutboxTx)
+        group_included = exists().where(
+            sibling.sender == OutboxTx.sender,
+            sibling.nonce == OutboxTx.nonce,
+            sibling.block_number.is_not(None),
+        )
+        rows = await self._all(
+            select(OutboxTx)
+            .join(Run, Run.id == OutboxTx.run_id)
+            .where(
+                OutboxTx.status.in_(AWAITING_RECEIPT_STATUSES),
+                OutboxTx.block_number.is_(None),
+                Run.state != RunState.TERMINAL,
+                ~group_included,
+            )
+            .order_by(OutboxTx.sender, OutboxTx.nonce, OutboxTx.created_at)
+        )
+        return [OutboxRecord.from_row(row) for row in rows]
+
+    async def with_block_from(self, from_block: int) -> list[OutboxRecord]:
+        rows = await self._all(
+            select(OutboxTx)
+            .where(OutboxTx.block_number >= from_block)
+            .order_by(OutboxTx.block_number, OutboxTx.nonce)
+        )
+        return [OutboxRecord.from_row(row) for row in rows]
+
+    async def in_status(self, *statuses: TxStatus) -> list[OutboxRecord]:
+        rows = await self._all(
+            select(OutboxTx)
+            .where(OutboxTx.status.in_(statuses))
+            .order_by(OutboxTx.sender, OutboxTx.nonce, OutboxTx.created_at)
+        )
+        return [OutboxRecord.from_row(row) for row in rows]
+
     async def max_nonce(self, sender: Address) -> int | None:
         result = await self._session.execute(
             select(func.max(OutboxTx.nonce)).where(OutboxTx.sender == Address(sender))
@@ -88,13 +152,21 @@ class SqlOutboxRepository(SqlRepository, OutboxRepository):
         row = required(await self._write_scalar(statement), f"outbox row {outbox_id}")
         return OutboxRecord.from_row(row)
 
-    async def mark_submitted(self, outbox_id: uuid.UUID, at: datetime) -> OutboxRecord:
+    async def mark_submitted(
+        self, outbox_id: uuid.UUID, at: datetime, submitted_block: int | None = None
+    ) -> OutboxRecord:
         return await self._update(
             outbox_id,
             status=TxStatus.SUBMITTED,
             submitted_at=func.coalesce(OutboxTx.submitted_at, at),
+            submitted_block=func.coalesce(OutboxTx.submitted_block, submitted_block),
             attempts=OutboxTx.attempts + 1,
             last_error=None,
+        )
+
+    async def mark_reverted(self, outbox_id: uuid.UUID, error: str, sentence: str) -> OutboxRecord:
+        return await self._update(
+            outbox_id, status=TxStatus.REVERTED, last_error=error, sentence=sentence
         )
 
     async def mark_included(self, outbox_id: uuid.UUID, inclusion: Inclusion) -> OutboxRecord:
@@ -117,6 +189,8 @@ class SqlOutboxRepository(SqlRepository, OutboxRepository):
         return await self._update(outbox_id, **values)
 
     async def clear_inclusion(self, outbox_id: uuid.UUID) -> OutboxRecord:
+        # A revert recorded from the removed block was a fact about that block only: its error and
+        # sentence go with it, and are written again if the transaction reverts on the new fork.
         return await self._update(
             outbox_id,
             status=TxStatus.SUBMITTED,
@@ -125,6 +199,8 @@ class SqlOutboxRepository(SqlRepository, OutboxRepository):
             gas_used=None,
             effective_gas_price_wei=None,
             included_at=None,
+            last_error=None,
+            sentence=None,
         )
 
     async def record_attempt(self, outbox_id: uuid.UUID, error: str | None = None) -> OutboxRecord:
@@ -135,16 +211,25 @@ class SqlChainEventRepository(SqlRepository, ChainEventRepository):
     """Canonical rows only, except `history_for_export`."""
 
     async def add(self, new: NewChainEvent) -> ChainEventRecord | None:
+        """Insert, or make an invalidated row canonical again (ADR-055); None if it already was.
+
+        The key includes the block hash, so a row that comes back under the same key is the same
+        log in the same block: the block is canonical again — a reorg that flipped back, or a
+        rewind that should not have happened — and the evidence row is restored rather than lost.
+        """
         values = asdict(new)
         values["decoded"] = dict(new.decoded)
-        statement = (
-            insert(ChainEvent)
-            .values(**values)
-            .on_conflict_do_nothing(
-                index_elements=[ChainEvent.block_hash, ChainEvent.tx_hash, ChainEvent.log_index]
-            )
-            .returning(ChainEvent)
-        )
+        inserted = insert(ChainEvent).values(**values)
+        statement = inserted.on_conflict_do_update(
+            index_elements=[ChainEvent.block_hash, ChainEvent.tx_hash, ChainEvent.log_index],
+            set_={
+                "canonical": True,
+                "invalidated_at": None,
+                "confirmations_at_index": inserted.excluded.confirmations_at_index,
+                "updated_at": func.now(),
+            },
+            where=ChainEvent.canonical.is_(False),
+        ).returning(ChainEvent)
         row = await self._write_scalar(statement)
         return None if row is None else ChainEventRecord.from_row(row)
 
@@ -212,6 +297,25 @@ class SqlChainEventRepository(SqlRepository, ChainEventRepository):
         records = [ChainEventRecord.from_row(row) for row in rows]
         return sorted(records, key=lambda record: (record.block_number, record.log_index))
 
+    async def invalidate_blocks(
+        self, chain_id: int, contract_address: Address, block_hashes: Sequence[Digest], at: datetime
+    ) -> list[ChainEventRecord]:
+        if not block_hashes:
+            return []
+        statement = (
+            update(ChainEvent)
+            .where(
+                ChainEvent.canonical.is_(True),
+                ChainEvent.chain_id == chain_id,
+                ChainEvent.contract_address == Address(contract_address),
+                ChainEvent.block_hash.in_([Digest(value) for value in block_hashes]),
+            )
+            .values(canonical=False, invalidated_at=at)
+            .returning(ChainEvent)
+        )
+        records = [ChainEventRecord.from_row(row) for row in await self._write_all(statement)]
+        return sorted(records, key=lambda record: (record.block_number, record.log_index))
+
     async def history_for_export(self, run_id: uuid.UUID) -> list[ChainEventRecord]:
         rows = await self._all(
             select(ChainEvent)
@@ -225,17 +329,20 @@ class SqlBalanceSnapshotRepository(SqlRepository, BalanceSnapshotRepository):
     """Canonical rows only, except `history_for_export`."""
 
     async def add(self, new: NewBalanceSnapshot) -> BalanceSnapshotRecord | None:
+        """Insert, or make an invalidated snapshot of the same block canonical again (ADR-055)."""
         statement = (
             insert(BalanceSnapshot)
             .values(**asdict(new))
-            .on_conflict_do_nothing(
+            .on_conflict_do_update(
                 index_elements=[
                     BalanceSnapshot.run_id,
                     BalanceSnapshot.stage,
                     BalanceSnapshot.party,
                     BalanceSnapshot.token,
                     BalanceSnapshot.block_hash,
-                ]
+                ],
+                set_={"canonical": True, "updated_at": func.now()},
+                where=BalanceSnapshot.canonical.is_(False),
             )
             .returning(BalanceSnapshot)
         )
@@ -259,6 +366,23 @@ class SqlBalanceSnapshotRepository(SqlRepository, BalanceSnapshotRepository):
                 BalanceSnapshot.run_id == run_id,
                 BalanceSnapshot.canonical.is_(True),
                 BalanceSnapshot.block_number >= from_block,
+            )
+            .values(canonical=False)
+            .returning(BalanceSnapshot)
+        )
+        return [BalanceSnapshotRecord.from_row(row) for row in await self._write_all(statement)]
+
+    async def invalidate_blocks(
+        self, run_id: uuid.UUID, block_hashes: Sequence[Digest]
+    ) -> list[BalanceSnapshotRecord]:
+        if not block_hashes:
+            return []
+        statement = (
+            update(BalanceSnapshot)
+            .where(
+                BalanceSnapshot.run_id == run_id,
+                BalanceSnapshot.canonical.is_(True),
+                BalanceSnapshot.block_hash.in_([Digest(value) for value in block_hashes]),
             )
             .values(canonical=False)
             .returning(BalanceSnapshot)

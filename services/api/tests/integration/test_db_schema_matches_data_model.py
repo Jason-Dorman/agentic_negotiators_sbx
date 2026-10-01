@@ -272,6 +272,8 @@ TABLES: dict[str, dict[str, str]] = {
         "effective_gas_price_wei": f"{AMOUNT} {N}",
         "submitted_at": f"{TS} {N}",
         "included_at": f"{TS} {N}",
+        "submitted_block": f"BIGINT {N}",
+        "sentence": f"TEXT {N}",
         **COMMON,
     },
     "chain_events": {
@@ -442,7 +444,7 @@ CHECKS: dict[str, set[str]] = {
     "decisions": {"ck_decisions_attempt_positive", "ck_decisions_authorized_implies_valid"}
     | _non_negative("decisions", "latency_ms"),
     "signed_actions": {"ck_signed_actions_sequence_positive"},
-    "tx_outbox": _non_negative("tx_outbox", "nonce", "attempts", "block_number"),
+    "tx_outbox": _non_negative("tx_outbox", "nonce", "attempts", "block_number", "submitted_block"),
     "chain_events": {"ck_chain_events_canonical_iff_not_invalidated"}
     | _non_negative("chain_events", "block_number", "log_index", "confirmations_at_index"),
     "balance_snapshots": _non_negative("balance_snapshots", "amount_minor", "block_number"),
