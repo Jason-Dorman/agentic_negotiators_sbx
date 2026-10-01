@@ -108,13 +108,16 @@ coverage-contracts: ## The 100 percent gate on NegotiationExchange (test_strateg
 	@cat /tmp/negotiation-coverage.txt
 	@uv run python infra/scripts/check_contract_coverage.py /tmp/negotiation-coverage.txt
 
-# docs/test_strategy.md section 10: backend 85 percent of lines. The agent's validator and signer
-# (100 percent of branches) join this rule set in stage 2.2, with the code they measure. A rule that
-# matches no file fails, so a renamed directory cannot turn this gate green by measuring nothing.
+# docs/test_strategy.md section 10: backend 85 percent of lines (from stage 2.1); the agent's
+# validator and signer 100 percent of branches (from stage 2.2), the two components that turn a
+# model's words into authority. A rule that matches no file fails, so a renamed directory cannot turn
+# this gate green by measuring nothing.
 coverage-python: ## The Python coverage thresholds (test_strategy 10); needs `make up`
 	REQUIRE_INTEGRATION=1 uv run pytest -q --cov --cov-report=json:$(PYTHON_COVERAGE_JSON)
 	uv run python infra/scripts/check_python_coverage.py $(PYTHON_COVERAGE_JSON) \
-		--rule 'services/api/src/api/*:lines:85'
+		--rule 'services/api/src/api/*:lines:85' \
+		--rule 'services/agent/src/agent/validation/*:branches:100' \
+		--rule 'services/agent/src/agent/signing/*:branches:100'
 
 gates: snapshot-check coverage-contracts coverage-python ## The gates that are neither lint nor test
 

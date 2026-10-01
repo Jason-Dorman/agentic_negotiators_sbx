@@ -80,6 +80,12 @@ class MinorAmount(int):
     def __repr__(self) -> str:
         return f"MinorAmount({int(self)})"
 
+    def __str__(self) -> str:
+        # Without this, `str()` and every f-string fall through to `__repr__`, because `int` has no
+        # `__str__` of its own: f"{amount}" rendered as "MinorAmount(94000000)" in any sentence that
+        # interpolated one. The decimal is what a reader of a sentence or a feedback text expects.
+        return int.__repr__(self)
+
     @classmethod
     def __get_pydantic_core_schema__(
         cls, source: Any, handler: GetCoreSchemaHandler
@@ -129,6 +135,9 @@ class Sequence(int):
 
     def __repr__(self) -> str:
         return f"Sequence({int(self)})"
+
+    def __str__(self) -> str:
+        return int.__repr__(self)  # see MinorAmount.__str__
 
     @classmethod
     def __get_pydantic_core_schema__(

@@ -103,6 +103,7 @@ mypy_path = [
     # Shared test helpers, imported by bare name. Deliberately a directory with no conftest.py:
     # two conftest.py files on this path would be two top-level modules with one name.
     "services/api/tests/support",
+    "services/agent/tests/support",
 ]
 exclude = ["contracts/lib/", "apps/web/"]
 
@@ -121,7 +122,14 @@ testpaths = [
 addopts = "-ra --strict-markers --strict-config"
 # `infra/scripts` and `packages/protocol/tools` hold command-line scripts rather than importable
 # packages (ADR-034), so pytest needs them on the path to test them at all.
-pythonpath = ["infra/scripts", "packages/protocol/tools", "services/api/tests/support"]
+pythonpath = [
+    "infra/scripts",
+    "packages/protocol/tools",
+    # `anvil_chain`: the throwaway chain and real deployment every chain-backed suite shares.
+    "packages/protocol/tests",
+    "services/api/tests/support",
+    "services/agent/tests/support",
+]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [

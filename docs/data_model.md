@@ -173,7 +173,7 @@ constraint tests found it.
 | `party` | `party NOT NULL` | |
 | `version` | `INTEGER NOT NULL` | 1 for a new run; clone increments from parent. `CHECK >= 1` |
 | `reservation_price_minor` | `NUMERIC(78,0) NOT NULL` | |
-| `min_remaining_inventory_minor` | `NUMERIC(78,0) NOT NULL` | |
+| `min_remaining_inventory_minor` | `NUMERIC(78,0) NOT NULL` | the least the party keeps, after settlement, of the token it gives up: base for the seller, quote for the buyer ([ADR-045](decision_log.md)) |
 | `instructions` | `TEXT NOT NULL` | free-text strategy guidance |
 | `extra` | `JSONB NOT NULL DEFAULT '{}'` | reserved for future fields, and **empty**: `mandate.v1.json` sets `additionalProperties: false`, because `observation.v1.json` embeds the mandate by `$ref` and an open object here would be an unconstrained payload inside the agent's allowlist. `CHECK (extra = '{}'::jsonb)` says the same thing in the database. Adding a field is a schema change, which is the point of the slot |
 | `mandate_hash` | `TEXT NOT NULL` | `0x` + sha256 of the mandate's canonical JSON (`negotiation_protocol.json_sha256`), recorded in `decisions.observation_hash` inputs |
@@ -263,7 +263,7 @@ Unique: `(run_id, turn)`.
 | `raw_response` | `JSONB NOT NULL` | decision envelope as returned, or error text |
 | `stop_reason` | `TEXT NULL` | `end_turn`, `refusal`, `max_tokens`, … |
 | `validation_ok` | `BOOLEAN NOT NULL` | |
-| `validation_code` | `TEXT NULL` | e.g. `below_reservation`, `stale_offer_hash`, `schema_error` |
+| `validation_code` | `TEXT NULL` | one of the closed set in [protocol.md](protocol.md) section 11.1, e.g. `below_reservation`, `stale_offer_hash`, `schema_error`; null when the attempt passed |
 | `validation_feedback` | `TEXT NULL` | the private feedback text sent back on repair |
 | `usage` | `JSONB NULL` | input, output, cache tokens |
 | `cost_estimated_usd` | `NUMERIC(12,6) NULL` | from price table |

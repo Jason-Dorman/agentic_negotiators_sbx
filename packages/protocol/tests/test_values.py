@@ -209,3 +209,22 @@ class TestCanonicalJson:
 
         with pytest.raises(TypeError, match="keys"):
             canonical_json({1: "one"})
+
+
+class TestFormatting:
+    """An amount interpolated into a sentence is its decimal, not its `repr`.
+
+    `int` has no `__str__` of its own, so an `int` subclass that overrides `__repr__` is printed by
+    `str()` and by every f-string through that override. Before this was fixed, a feedback text
+    built as f"your offer of {amount}" read "your offer of MinorAmount(94000000)".
+    """
+
+    @pytest.mark.parametrize("value", [MinorAmount(94_000_000), Sequence(3)])
+    def test_str_and_f_strings_give_the_decimal(self, value: int) -> None:
+        assert str(value) == str(int(value))
+        assert f"{value}" == str(int(value))
+        assert f"{value:>12}" == f"{int(value):>12}"
+
+    def test_repr_still_names_the_type(self) -> None:
+        assert repr(MinorAmount(5)) == "MinorAmount(5)"
+        assert repr(Sequence(5)) == "Sequence(5)"

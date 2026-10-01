@@ -16,7 +16,7 @@ Add new questions here as they arise, with a provisional answer and the document
 
 # Reasoning behind the answers that needed discussion
 
-Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026; Q18 and Q19 on 25 September 2026.
+Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026; Q18 and Q19 on 25 September 2026; Q21 to Q24 on 30 September 2026, when building the agent service raised them; Q25 to Q28 the same day, when its adversarial review did.
 
 ## Q18: fresh participant wallets per run
 
@@ -106,3 +106,11 @@ Q6, Q14, Q15 and Q16 were decided on 21 September 2026; Q17 on 24 September 2026
 | Q16 | ENS naming | Adopted, display-only: one Sepolia name with subnames for the exchange and both mock tokens, resolved once at deployment and pinned into the manifest. Nothing resolves ENS at run time. Reasoning [above](#q16-ens-naming). | ADR-030, api_contract deployments, data_model 3.2, PRD FR-U10, test_strategy A17, build_plan stage 5 | 21 September 2026 |
 | Q18 | Fresh participant wallets per run | Each agent derives the run's key from one root secret with HMAC-SHA256, domain-separated by chain ID, role and run ID; the database stores the address and the derivation metadata, never a key. Reasoning [above](#q18-fresh-participant-wallets-per-run). | ADR-039, ADR-023 amended, api_contract 6, data_model 3.5, security 7, architecture 3.3 and 5.1 | 25 September 2026 |
 | Q19 | Signing a participant's setup approval | The agent builds and signs the ERC-20 `approve` itself from provisioned state; the backend supplies only nonce, gas limit and fee caps. Reasoning [above](#q19-who-signs-a-participants-setup-approval). | ADR-040, api_contract 6, architecture 5.1 | 25 September 2026 |
+| Q21 | What the agent internal API's HMAC covers | Method, path and body, not the body alone: a body-only MAC was the same for every empty body, so a captured health check authorised any run's `release`. | ADR-041, api_contract 6, security 5 | 30 September 2026 |
+| Q22 | The setup approval's gas-limit bound | 100,000 by default, configurable as `AGENT_SETUP_GAS_LIMIT_MAX`; about twice what an OpenZeppelin `approve` costs. | ADR-042, api_contract 6 | 30 September 2026 |
+| Q23 | The deterministic policy's walk-away reason when its own holdings block it | `inventory_constraint`, when its balance or inventory floor refuses the move it would otherwise make; section 13's reasons otherwise. | ADR-043, protocol 13 | 30 September 2026 |
+| Q24 | How `approve-session` checks the expiry window | The backend sends the opening block's timestamp; the agent requires `opened_at_ts < expires_at_ts <= opened_at_ts + session_duration_s`. | ADR-044, api_contract 6 | 30 September 2026 |
+| Q25 | What a buyer's inventory floor means | Capital: each party's floor applies to the token it gives up — mASSET for the seller, mUSD for the buyer. | ADR-045, protocol 11.1, mandate schema | 30 September 2026 |
+| Q26 | What the agent does with a self-contradictory observation, and the order of `history` | The agent refuses with `422 observation_inconsistent`; the controller rebuilds from the chain and retries up to five times, then `RECOVERY_REQUIRED`. History is ascending by sequence; an expired offer is not active. | ADR-046, protocol 12, api_contract 6 and 7, architecture 6.1 | 30 September 2026 |
+| Q27 | What bounds the setup approval's fees | The worst-case cost, gas limit times fee cap, at most `AGENT_SETUP_MAX_COST_WEI`, default 0.01 ETH. | ADR-047, ADR-042 corrected | 30 September 2026 |
+| Q28 | A release during a turn, and restart recovery | Release cancels the signature of a turn in flight; after an agent restart the controller re-provisions, re-approves the session from the canonical event, and retries. | ADR-048, api_contract 6, architecture 11 | 30 September 2026 |

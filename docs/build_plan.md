@@ -241,16 +241,129 @@ gates.
 
 ### Stage 2.2: Agent service
 
+**Status: complete, 30 September 2026**, on branch `feature/agent-service`, cut from
+`feature/data-models`, and adversarially reviewed the same day (below). Every deliverable below is
+done and `make ci` is green: 1,016 Python tests (593 of them new since 2.1, 564 in the agent service),
+115 Foundry tests, 31 Vitest tests, the backend at 99.1 percent of lines, the agent's validator and
+signer at 100 percent of branches, and all six import contracts kept. As with 2.1, the pipeline itself
+has not yet run this branch on GitHub.
+
+Eight questions the build and its review raised were put to the product owner and answered on 30
+September 2026: the internal API's HMAC binds method, path and body ([ADR-041](decision_log.md), Q21);
+the setup approval's gas bound is 100,000 and configurable ([ADR-042](decision_log.md), Q22) and its
+worst-case cost is capped at 0.01 ETH ([ADR-047](decision_log.md), Q27); the deterministic policy
+leaves with `inventory_constraint` when its own holdings stop it ([ADR-043](decision_log.md), Q23);
+session approval checks an expiry window against the opening block's time ([ADR-044](decision_log.md),
+Q24); a buyer's inventory floor is capital ([ADR-045](decision_log.md), Q25); a contradictory
+observation is refused and the controller retries ([ADR-046](decision_log.md), Q26); and a release
+cancels a signature in flight while a restart is recovered by re-provisioning and re-approving
+([ADR-048](decision_log.md), Q28).
+
 **Deliverables**
-- `KeyHolder`: resolves the instance's root key from an `env:` or `keystore:` reference and derives
-  each run's signing key under ADR-039. It exposes signing and never key material.
-- `MandateValidator`, `DeterministicPolicy` ([protocol.md](protocol.md) section 13), and the
-  typed-message signer that builds every message from validated state.
-- The internal API of [api_contract.md](api_contract.md) section 6 behind HMAC — health, provision,
-  approve-session, setup-approval (ADR-040), turn and release — with run-scoped state and the
-  service entry point.
-- Runbook section 3, "Loading keys".
-- Coverage gate: 100 percent of branches on the validator and the signer.
+- **done** — `KeyHolder`: resolves the instance's root key from an `env:` or `keystore:` reference and
+  derives each run's signing key under ADR-039. It exposes signing and never key material: its
+  exact public surface is asserted, neither it nor a run signer can be pickled or copied, and no
+  `repr` shows a key.
+- **done** — `MandateValidator` (the sixteen codes of [protocol.md](protocol.md) section 11.1, each
+  with private feedback), `DeterministicPolicy` ([protocol.md](protocol.md) section 13), and the
+  typed-message signer that builds every message from validated state — the signer accepts only the
+  types the validator produces, and refuses without an approved session, at the deadline, and with a
+  key that is not the session's party.
+- **done** — The internal API of [api_contract.md](api_contract.md) section 6 behind HMAC — health,
+  provision, approve-session, setup-approval (ADR-040), turn and release — with run-scoped state and
+  the service entry point, `python -m agent`. Section 6 now states every refusal, state and
+  idempotency rule the implementation has.
+- **done** — Runbook section 3, "Loading keys and running an agent", and `generate_keys.py` and
+  `infra/.env.example` naming the two agents' secrets as roots, `BUYER_ROOT_KEY` and
+  `SELLER_ROOT_KEY`, as ADR-039 said they would from this stage.
+- **done** — Coverage gate: 100 percent of branches on the validator and the signer — every file in
+  `agent/validation/` and `agent/signing/`, session approval and the setup approval included — in
+  `make coverage-python` and the CI job.
+
+**Confirmed by mutation, not by coverage.** Sixty-four deliberate breakages were applied one at a
+time, and each turned the suite red through the test aimed at it; the tree was restored and checked by
+content hash after each. The first thirty-nine, before the review: eleven of the validator's sixteen
+rules removed or moved by one at their boundary; the signer's five refusals — no approved session,
+past the deadline, a key that is not the session's party, `validUntil` left uncapped, the sequence
+shifted; session approval's four — `configHash` recomputed from the event's tokens rather than the
+provisioned ones, the expiry window left open above, its own slot unchecked, itself accepted as its
+counterparty; the setup approval's three — the gas bound made inclusive, the token swapped, the
+priority fee unchecked; the role dropped from the key derivation and an out-of-range candidate
+accepted; and fourteen in the service, policy, executor and routes — the MAC reduced to the body, the
+key reference and the stored address unchecked, the turn cache bypassed, a mandate accepted in a turn,
+the observed session unchecked, the deadline left to the signer, the holdings reason dropped, the
+buyer's rounding reversed, a repair sent without its feedback, a release that leaves no tombstone,
+`instructions` let into the logs, the turn read from the active offer against ADR-016, and
+authentication skipped. A fortieth — the key holder signing with the root itself — turned the Anvil
+exit test red in five places. After the review, twenty-five more for what it changed: each of the
+consistency check's rules, the buyer's capital floor, the cost cap, the key-reference grammar, the
+non-UTF-8 keystore, release cancelling a turn in flight, value-object text kept out of error bodies,
+deep JSON, trailing-slash redirects, `405`, objects logged by `repr`, the standard library bypassing
+redaction, and the secret scan's shared-secret rule. One of those survived the first time — a missing
+`status` on a history entry — and the test now covers all four optional offer fields.
+
+**What building it found, which the next sub-stages need.**
+
+1. **A MAC over the body alone was the same for every empty body.** `GET /internal/health` and
+   `POST …/release` both have one, so a health check's MAC authorised the release of any run, and a
+   provisioning body — which names no run — could be replayed against another run's path. The
+   contract's own control did not cover the threat it was listed against; ADR-041 binds the method
+   and the path. The backend's `agent_client` in 2.4 signs with the same function the agent verifies
+   with, `negotiation_protocol.agent_auth`.
+2. **`f"{amount}"` printed `MinorAmount(94000000)`.** `int` has no `__str__` of its own, so an `int`
+   subclass that overrides `__repr__` is printed through it by `str()` and every f-string. The
+   validator's first feedback texts said exactly that, and so would the timeline sentences of 2.3.
+   `MinorAmount` and `Sequence` gained a `__str__`; the protocol package has a test.
+3. **Python's `jsonschema` lets `$` match before a trailing newline**, because its `pattern` is
+   `re.search`. `"94000000\n"` satisfies every amount pattern in the schemas. The agent parses every
+   amount through its value object after the schema, which matches the whole string; the backend's
+   observation builder and export should do the same.
+4. **A validation error quotes its input.** Pydantic's message includes the rejected value, so a key
+   pasted into `AGENT_ROOT_KEY_REF` was printed back by the start-up error. Settings, request bodies
+   and schema failures now report the location and the rule, never the value, and tests check it.
+5. **The secret scan did not know ADR-039's names.** Its key-context pattern matched `private_key`
+   and `signing_key` but not `ROOT_KEY`, so `BUYER_ROOT_KEY: "0x…"` in a committed Compose file would
+   have passed. It is extended, with a test shown failing first; 2.5's Compose file is where it would
+   have mattered.
+6. **Two service checks were invisible to a deterministic policy.** Refusing a turn after the
+   deadline and answering a repeated turn from its cache both exist to keep a *model* from being
+   called; with the baseline, removing either leaves every response the same, because the signer
+   refuses the late turn identically and the baseline re-answers identically. Planning the
+   mutations exposed it before any ran, and a policy that counts its calls now pins both.
+
+#### The adversarial review, 30 September 2026
+
+Six lenses over the change set — claims against reality, authority and signing against the contract,
+the validator and policy against the spec, privacy and secrets, the internal API as the backend will
+use it, and vacuity — each in its own copy of the tree with its own database, then two independent
+refutation attempts per finding, one on truth and one on impact: 36 agents in all. 43 candidates
+merged to 31 distinct; the 14 most severe were verified, and 6 survived both refutations, 8 were
+refuted, and 17 were left open over the verification cap. All 23 confirmed or open findings are
+fixed in this change set. The ones that mattered:
+
+- **A root pasted after the prefix of its reference leaked.** `env:BUYER_ROOT_KEY=0x…` passed as a
+  reference, failed to resolve, and was printed at start-up and returned in every provisioning
+  refusal. Key references now have a grammar a key cannot satisfy ([ADR-049](decision_log.md)).
+- **The test named for key exfiltration could not fail.** The in-process log scan was set up after
+  the app had logged its start-up line, and the exit test's scan looked only for mandate values; an
+  agent that logged its root passed both. Both scans now capture start-up and search for every secret
+  each process was given.
+- **The agent signed on self-contradictory observations**, and read the turn from the list order of a
+  history whose order was unspecified. History is now ascending by sequence, an expired offer is null
+  in `active_offer`, and the agent refuses a contradiction with `observation_inconsistent`
+  ([ADR-046](decision_log.md)).
+- Smaller, each with its test: a non-UTF-8 keystore crashed start-up instead of starting degraded;
+  value objects' messages quoted rejected values in error bodies; the check order of protocol 11.1
+  was pinned for one pair of eight; the buyer's inventory floor had been defined without the product
+  owner ([ADR-045](decision_log.md)); the setup approval's fee was unbounded
+  ([ADR-047](decision_log.md)); a turn in flight still signed after its run was released
+  ([ADR-048](decision_log.md)); oversized integers and deep JSON gave 500s; a wrong method was
+  `bad_request` and paths were redirected before authentication; log redaction did not reach object
+  `repr`s or the standard library's records; the secret scan missed agent shared secrets; and the
+  first version of this section named 34 of the 39 mutations it counted.
+- **Found while setting the review up**, before any reviewer ran: `test_reconstruct.py`'s bare
+  `from conftest import …` resolved to whichever conftest was loaded last, so the suite failed at
+  collection in one order and passed in the other.
 
 **Exit condition:** two agent instances, driven over their internal API by a test harness standing
 in for the backend and the relay, negotiate `default-overlap` and `infeasible-clone` on Anvil
@@ -258,6 +371,16 @@ through the real contract. The deterministic pair settles at 93.333333 mUSD; the
 in the buyer's signed Close with `terms_unacceptable`. Every signature recovers to that run's derived
 address and none to a root, and each table-driven validator case asserts its feedback text and that
 nothing was signed.
+
+**Met**, by `services/agent/tests/integration/test_negotiation_on_anvil.py` and the validator table:
+the two instances run as real processes through `python -m agent`, one on an `env:` root and one on
+an encrypted `keystore:` root. The default pair goes 80, 108, 86.666666, 102, 93.333333 and the
+seller accepts; the infeasible pair uses all eight offers — 80, 126, 86.666666, 119, 93.333333, 112,
+100, 105 — and the buyer closes with reason 1. Beyond the condition, every digest equals the
+contract's own `hashOffer`, `hashAccept` or `hashClose`, the setup approvals came from the derived
+wallets, each run had fresh ones, and the A15 reconstruction tool agrees with both sessions. A third
+run lets the buyer's 93.333333 expire before the seller acts: the seller counters at 96 and the buyer
+accepts it, through an observation the agent checked for consistency.
 
 ### Stage 2.3: Relay, indexer and projection
 
@@ -290,6 +413,12 @@ at the chain layer).
   and the single active run, setup (funding, minting, agent-signed approvals, `createSession`, and
   session approval by both agents), pause, resume, abort, expiry, and recovery after a restart.
 - `turns`: the turn executor of spec section 9.2.
+- The obligations the agent service of 2.2 places on the controller: build `history` in ascending
+  sequence order with `active_offer` null once its offer has expired ([ADR-046](decision_log.md));
+  on `observation_inconsistent`, rebuild the observation from the chain and retry up to five times,
+  then move the run to `RECOVERY_REQUIRED`; on `unprovisioned` after an agent restart, re-provision
+  with the stored address, re-send approve-session from the canonical `SessionOpened` event and its
+  block's timestamp, and retry ([ADR-048](decision_log.md)).
 - Runbook section 6 extended to run-level recovery.
 
 **Exit condition:** driven in-process through the controller, A02 settles and A03 ends in a close,
@@ -344,7 +473,7 @@ cause `reorg` — and every transition in architecture 6.1 is exercised, illegal
 ## Stage 6: Evaluation
 
 **Deliverables**
-- Batch evaluator CLI: population generation from seed, four pairings, repetitions, sequential execution, per-run exports, invariant checker, report with distributions and bootstrap intervals.
+- Batch evaluator CLI: population generation from seed, four pairings, repetitions, sequential execution, per-run exports, invariant checker, report with distributions and bootstrap intervals. The feasible interval takes each party's inventory floor into account as well as its reservation price — for the buyer, its quote balance less its floor caps what it can pay ([ADR-045](decision_log.md)).
 - Metrics per spec 11.2 in the API and the report.
 - Results document `docs/results-v0.1.md` reporting failures, costs, utility, and protocol limits honestly.
 

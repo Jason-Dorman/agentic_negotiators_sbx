@@ -35,8 +35,14 @@ SKIP_DIRS = frozenset(
 SKIP_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".woff", ".woff2"})
 
 HEX64 = re.compile(r"(?<![0-9a-fA-F])(?:0x)?[0-9a-fA-F]{64}(?![0-9a-fA-F])")
+# `root[_-]?key` since stage 2.2: each agent's participant keys are derived from a root secret
+# named `BUYER_ROOT_KEY` or `SELLER_ROOT_KEY` (ADR-039), and a root is worth more than any key
+# derived from it. Without it, `BUYER_ROOT_KEY: "0x…"` in a committed Compose file passed.
+# `shared[_-]?secret` likewise: the agents' HMAC secrets, which `.env.example` says to generate as
+# 64 hex characters (ADR-041).
 SECRET_CONTEXT = re.compile(
-    r"(?i)(private[_-]?key|privkey|secret[_-]?key|signing[_-]?key|mnemonic|seed[_-]?phrase)"
+    r"(?i)(private[_-]?key|privkey|secret[_-]?key|signing[_-]?key|root[_-]?key|shared[_-]?secret"
+    r"|mnemonic|seed[_-]?phrase)"
 )
 ANTHROPIC_KEY = re.compile(r"sk-ant-[A-Za-z0-9_\-]{16,}")
 # A value that is obviously a stand-in is not a leak.

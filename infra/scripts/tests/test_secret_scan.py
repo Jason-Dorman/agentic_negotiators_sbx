@@ -28,6 +28,31 @@ def test_catches_a_private_key_on_a_key_named_line(tmp_path: Path) -> None:
     assert scan(tmp_path, "settings.py", f'BUYER_PRIVATE_KEY = "0x{HEX32}"\n')
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        f'BUYER_ROOT_KEY: "0x{HEX32}"\n',
+        f"      - SELLER_ROOT_KEY=0x{HEX32}\n",
+        f'root_key = bytes.fromhex("{HEX32}")\n',
+    ],
+)
+def test_catches_an_agent_root_secret(tmp_path: Path, line: str) -> None:
+    """ADR-039's roots are named ROOT_KEY, which the first version of the pattern did not know."""
+    assert scan(tmp_path, "compose.yaml", line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f'AGENT_A_SHARED_SECRET: "{HEX32}"\n',
+        f"      - AGENT_SHARED_SECRET={HEX32}\n",
+    ],
+)
+def test_catches_an_agent_shared_secret(tmp_path: Path, line: str) -> None:
+    """`.env.example` tells operators to generate these as 64 hex characters (ADR-041)."""
+    assert scan(tmp_path, "compose.yaml", line)
+
+
 def test_catches_an_anthropic_credential(tmp_path: Path) -> None:
     found = scan(tmp_path, "client.py", 'Anthropic(api_key="sk-ant-api03-AbCdEf0123456789xyz")\n')
     assert any("sk-ant-" in reason for _, reason in found)

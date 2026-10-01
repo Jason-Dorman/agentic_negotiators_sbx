@@ -12,7 +12,7 @@
       "$ref": "#/$defs/minorAmount"
     },
     "min_remaining_inventory_minor": {
-      "description": "Base-token balance the party will not go below. Zero for a party with no inventory floor.",
+      "description": "The least the party will hold, after settlement, of the token it gives up: the base token for the seller, which delivers the base amount, and the quote token for the buyer, which pays the quote amount (ADR-045). Zero for a party with no floor.",
       "$ref": "#/$defs/minorAmount"
     },
     "instructions": {

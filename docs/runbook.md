@@ -14,7 +14,7 @@ has actually exercised; nothing is written ahead of the code that makes it true.
 |---|---|
 | 1. Local startup | Stage 0 |
 | 2. Database isolation and the ports; applying the schema; the integration suite | Stage 0; stage 2.1 |
-| 3. Keys and secrets | Stage 0 (generation); stage 2.2 (loading) |
+| 3. Keys and secrets; running an agent instance | Stage 0 (generation); stage 2.2 (loading, roots, running an agent) |
 | 4. Deploying the contracts and reading the manifest | Stage 1 |
 | 5. Reconstructing a session from chain data | Stage 1 |
 | 6. Recovering pending transactions | Stages 2.3 and 2.4 |
@@ -177,10 +177,13 @@ Every key in this project is a test-network key. None of this is production cust
 security document says so in those words ([security_and_trust_boundaries.md](security_and_trust_boundaries.md)
 section 7).
 
-### Generating keys — available now
+### Generating keys
+
+Once per deployment, not per run: every run's participant wallets are derived from the two agents'
+roots ([ADR-039](decision_log.md)), so there is nothing to regenerate between runs.
 
 ```sh
-# Local profile: throwaway keys as `env:` refs. No password needed.
+# Local profile: throwaway secrets as `env:` refs. No password needed.
 uv run --group tooling python infra/scripts/generate_keys.py --profile local
 
 # Sepolia profile: encrypted web3 keystores written to infra/secrets/.
@@ -189,19 +192,91 @@ read -rs KEYSTORE_PASSWORD && export KEYSTORE_PASSWORD
 uv run --group tooling python infra/scripts/generate_keys.py --profile sepolia
 ```
 
-The local branch prints the keys for pasting into `infra/.env`. The Sepolia branch prints
-addresses and `keystore:` references and never prints a private key.
+Four secrets, of two kinds. The **relay** and **operator** keys are used as they are, so the script
+prints their addresses: those are the addresses to fund. The **buyer** and **seller** secrets are
+**roots** (`BUYER_ROOT_KEY`, `SELLER_ROOT_KEY`): a root never signs and is never funded, so no address
+is printed for one. The local branch prints the values for pasting into `infra/.env`; the Sepolia
+branch writes `relay.json`, `operator.json`, `buyer-root.json` and `seller-root.json` into
+`infra/secrets/` and prints only `keystore:` references.
 
-### Loading keys — stage 2
+### Loading keys and running an agent — stage 2.2
 
-Runtime loading is the `KeyHolder` in `services/agent/src/agent/keys/`, which arrives with the
-agent service in stage 2.2 ([ADR-023](decision_log.md)). Both reference forms resolve through it:
-`env:NAME` reads the variable, `keystore:/path` decrypts the file with `KEYSTORE_PASSWORD`.
+Each agent instance resolves its root once, at start-up, through the `KeyHolder` in
+`services/agent/src/agent/keys/`, from the reference in `AGENT_ROOT_KEY_REF`:
 
-For the two participants, what a reference resolves to is a **root** secret, not a trading key
-([ADR-039](decision_log.md)): each agent derives a fresh key for every run from its root, the chain
-ID, its role and the run ID, and reports only the address. The procedure — including what
-`generate_keys.py` emits for roots — lands with the key holder in stage 2.2.
+| Reference | Resolves by | Profile |
+|---|---|---|
+| `env:BUYER_ROOT_KEY` | reading that variable: 32 bytes of hex, with or without `0x` | local |
+| `keystore:/run/secrets/buyer-root.json` | decrypting the file with `KEYSTORE_PASSWORD` | Sepolia |
+
+For each run it derives a fresh key from the root, the chain ID, its role and the run ID, and reports
+only the address. The backend stores that address and the derivation's public inputs in `wallets`;
+it never sees a key of either kind.
+
+To run an instance by hand (Compose does this from stage 2.5), give the process its own values and
+nothing else. Do not `source infra/.env` into its shell: that file holds both roots, and each root
+reaches exactly one instance.
+
+```sh
+from_env() { grep "^$1=" infra/.env | cut -d= -f2-; }
+env -i PATH="$PATH" HOME="$HOME" \
+  AGENT_ROLE=buyer AGENT_INSTANCE=agent-a AGENT_PORT=8101 \
+  AGENT_ROOT_KEY_REF=env:BUYER_ROOT_KEY BUYER_ROOT_KEY="$(from_env BUYER_ROOT_KEY)" \
+  AGENT_SHARED_SECRET="$(from_env AGENT_A_SHARED_SECRET)" \
+  uv run python -m agent
+```
+
+The seller is the same with `seller`, `agent-b`, `8102`, `SELLER_ROOT_KEY` and
+`AGENT_B_SHARED_SECRET`; on Sepolia, `AGENT_ROOT_KEY_REF=keystore:/run/secrets/seller-root.json` and
+`KEYSTORE_PASSWORD` in place of the root variable. Every setting an instance reads is `AGENT_`-prefixed, apart from the
+variable its root reference names and `KEYSTORE_PASSWORD`:
+
+| Variable | Required | Notes |
+|---|---|---|
+| `AGENT_ROLE` | yes | `buyer` or `seller` |
+| `AGENT_INSTANCE` | yes | `agent-a` or `agent-b`; lowercase letters, digits and hyphens |
+| `AGENT_ROOT_KEY_REF` | yes | `env:NAME` (an upper-case variable name) or `keystore:/path.json`. Anything else — a key pasted here, or after the prefix as in `env:BUYER_ROOT_KEY=0x…` — stops the instance starting, and the error does not print it ([ADR-049](decision_log.md)) |
+| `AGENT_SHARED_SECRET` | yes | At least 32 characters. The HMAC key of the internal API, one per instance ([ADR-041](decision_log.md)) |
+| `AGENT_PORT` | yes | 8101 and 8102 by convention |
+| `AGENT_HOST` | no | `127.0.0.1` by default |
+| `AGENT_SETUP_GAS_LIMIT_MAX` | no | 100000 by default ([ADR-042](decision_log.md)) |
+| `AGENT_SETUP_MAX_COST_WEI` | no | 10000000000000000 (0.01 ETH) by default: the most a setup approval may cost, gas limit times fee cap ([ADR-047](decision_log.md)) |
+| `AGENT_LOG_LEVEL` | no | `INFO` by default |
+
+**Checking it loaded.** An instance whose root did not resolve still starts — so "the agent is down"
+and "the agent's key is misconfigured" stay distinguishable — reports `"signer_ok": false` from its
+health route, logs `signer_unavailable` with the reason, and refuses to provision with
+`503 dependency_unavailable`. The health route needs a signed request like every other:
+
+```sh
+AGENT_A_SHARED_SECRET="$(from_env AGENT_A_SHARED_SECRET)" uv run python - <<'PY'
+import os, uuid, httpx
+from negotiation_protocol import AUTH_HEADER, REQUEST_ID_HEADER, agent_request_mac
+secret = os.environ["AGENT_A_SHARED_SECRET"].encode()
+headers = {AUTH_HEADER: agent_request_mac(secret, "GET", "/internal/health", b""),
+           REQUEST_ID_HEADER: str(uuid.uuid4())}
+print(httpx.get("http://127.0.0.1:8101/internal/health", headers=headers).json())
+PY
+```
+
+| `signer_unavailable` reason | What to do |
+|---|---|
+| `the environment variable BUYER_ROOT_KEY is not set` | The reference names a variable the instance's environment lacks. Set it, or correct the reference |
+| `… is not 32 bytes of hex` | The variable holds something other than a 32-byte secret |
+| `KEYSTORE_PASSWORD is not set, so the keystore … cannot be opened` | Export the password in the instance's environment |
+| `the keystore … cannot be read` / `… is not a keystore: it is not JSON text` | The path is wrong, not mounted, or not a keystore file |
+| `the keystore … could not be decrypted with KEYSTORE_PASSWORD` | Wrong password for that file |
+
+**After an agent restart.** A restarted instance has forgotten every run and answers the next call
+for one with `409 invalid_state`, state `unprovisioned`. From stage 2.4 the controller recovers on
+its own: it re-provisions the run with the address it stored, which the derivation reproduces, re-sends
+approve-session from the canonical `SessionOpened` event and that block's timestamp, and retries
+([ADR-048](decision_log.md)). Until then, nothing to do by hand.
+
+**Changing or losing a root.** A new root derives different addresses for every future run, which is
+harmless: wallets are fresh per run anyway. It cannot sign for a run that is still open under the old
+root, because that run's address was derived from the old one. If a root is lost while a run is open,
+the recovery is an operator abort, which needs no participant key ([ADR-039](decision_log.md)).
 
 The boundary it has to hold, from stage 2 onwards and unchanged by anything later:
 

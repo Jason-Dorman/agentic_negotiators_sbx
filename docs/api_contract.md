@@ -450,13 +450,23 @@ With `include_private=true`, `private` contains `mandate_versions`, full `decisi
 
 ## 6. Agent internal API
 
-Served by each agent service on its own port. Only the backend may call it. Every request carries `X-Agent-Auth: <HMAC-SHA256 of body with the instance shared secret>` and `X-Request-Id`. Requests without a valid signature return `401`.
+Served by each agent service on its own port. Only the backend may call it. Implemented in stage 2.2 (`services/agent/`); run an instance with `python -m agent` ([runbook.md](runbook.md) section 3).
+
+**Authentication ([ADR-041](decision_log.md)).** Every request carries `X-Agent-Auth`: the lowercase-hex HMAC-SHA256, under the instance's shared secret, of the request's method, a newline, its URL path, a newline and its raw body. The layout is `negotiation_protocol.agent_auth`, which both sides import. For every request that reaches a route, the agent authenticates before it parses the run id or the body, and before it looks at `X-Request-Id`; a missing or wrong MAC is `401 unauthorized`. A path or method that matches no route is answered `404 not_found` or `405 method_not_allowed` without authentication, because there is nothing to authenticate for: such an answer says only that the route does not exist, which this section publishes anyway. Paths are never redirected, so a trailing slash is a 404, not a hop past the MAC. A MAC is therefore valid for one method, one route, one run and one body — a health check's MAC does not authorise a `release`, although both bodies are empty. Every request also carries `X-Request-Id`, which is required after authentication (`400 bad_request` without it) and echoed on the response.
+
+**Errors** use the envelope of section 1.1, with `request_id` set from `X-Request-Id`. `details` never holds a mandate value, a key or a secret: schema failures name the failing location and the schema keyword it broke (`{"session": "fails additionalProperties"}`), and a value a value object refuses is reported as `is not a valid value of this field's type`: no error text quotes the offending value, because error responses reach the backend's logs. An unexpected failure is `500 internal_error` with the request id alone. The interactive docs and OpenAPI routes are disabled: they would be unauthenticated.
+
+**Run states on an instance.** `unprovisioned` → `provisioned` → `approved`, and `released` after `release`. A call the state does not allow is `409 invalid_state` with `details.state` and `details.allowed_from`. State is in memory: a restarted instance knows no runs and answers `409 invalid_state` with `state = "unprovisioned"`. The controller then re-provisions the run with its stored address as `expected_address`, re-sends approve-session built from the canonical `SessionOpened` row and that block's timestamp read from the chain, and retries the call ([ADR-048](decision_log.md), [architecture.md](architecture.md) section 11).
+
+**Idempotency.** An identical request returns the first response. The same operation with different content is refused rather than answered twice: `409 idempotency_conflict` for provisioning and turns, `409 session_mismatch` for approve-session.
 
 #### `GET /internal/health`
 
 ```json
-{ "status": "ok", "role": "buyer", "instance": "agent-a", "policy_kinds": ["deterministic", "model"], "model_ok": true, "signer_ok": true }
+{ "status": "ok", "role": "buyer", "instance": "agent-a", "policy_kinds": ["deterministic"], "model_ok": false, "signer_ok": true }
 ```
+
+`policy_kinds` lists what this instance can run: `deterministic` from stage 2.2, `model` from stage 3. `model_ok` is `false` until the model client exists. `signer_ok` is `false` when the instance's root could not be resolved at start-up — an unset variable, an unreadable keystore, a wrong password — and the reason is in its log; the instance still answers, so "the agent is down" and "the agent's key is misconfigured" stay distinguishable.
 
 #### `POST /internal/runs/{run_id}/provision`
 
@@ -479,19 +489,29 @@ Idempotent. Delivers the mandate and configuration this instance needs for one r
 }
 ```
 
+Every field is required and parsed strictly: an unknown field, a number where an amount string belongs, or a float where an integer belongs is `422 validation_error`. `model_id` and `effort` are `null` for a deterministic run. `limits.repair_attempts` is the number of repairs after a refused decision, for either policy. The mandate is validated against `mandate.v1.json` and then as value objects, so an amount the schema's pattern admits but a value object refuses — `"100000000\n"` — is refused too. `base_token` equal to `quote_token` is refused ([ADR-037](decision_log.md)), as is any chain integer beyond `uint64`. `key_ref` must be a key reference in the grammar of [ADR-049](decision_log.md) — `env:NAME` with an upper-case variable name, or `keystore:/path.json` — with no run of 32 or more hexadecimal characters anywhere in it, so that a key pasted where its reference belongs is refused and never repeated.
+
 Response `200`: `{ "provisioned": true, "my_address": "0x…", "key_derivation": { "scheme": "agent-negotiation-sandbox/participant-key/v1", "chain_id": 31337, "role": "buyer", "run_id": "…" }, "policy_version": "det-1.0.0" | "model-1.0.0", "prompt_template_version": "v1.0.0" | null }`.
 
-The run's participant key is **derived**, not supplied ([ADR-039](decision_log.md)). `key_ref` names the instance's root secret; the agent refuses it with `409 key_ref_mismatch` unless it is the root this instance is configured with, so a request routed to the wrong instance cannot make it sign as the other party. The agent derives the key from the root, the chain ID, its role and the run ID, and returns the address as `my_address`; the backend stores that address and `key_derivation` in `wallets` and never sees a key. `expected_address` is null on first provisioning. On a re-provisioning — after an agent restart, for instance — the backend sends the address it stored, and the agent refuses with `409 address_mismatch` if its derivation does not reproduce it.
+The run's participant key is **derived**, not supplied ([ADR-039](decision_log.md)). `key_ref` names the instance's root secret; the agent refuses it with `409 key_ref_mismatch` unless it is the root this instance is configured with, so a request routed to the wrong instance cannot make it sign as the other party. The agent derives the key from the root, the chain ID, its role and the run ID, and returns the address as `my_address`; the backend stores that address and `key_derivation` in `wallets` and never sees a key. `expected_address` is null on first provisioning. On a re-provisioning — after an agent restart, for instance — the backend sends the address it stored, and the agent refuses with `409 address_mismatch` if its derivation does not reproduce it; a refused provisioning is not kept.
+
+Refusals, in the order they are checked: a malformed body, `400 bad_request` or `422 validation_error`; `409 invalid_state` for a released run; for a run already provisioned, `409 idempotency_conflict` if the body differs (with `expected_address` left out of the comparison, so a first provisioning and a re-provisioning are the same) or `409 address_mismatch`; `503 dependency_unavailable` with `details.dependency = "signer"` and the reason, when the root did not load; `409 key_ref_mismatch`; `422 validation_error` for a `role` that is not this instance's or a `policy` not in `policy_kinds`; `409 address_mismatch`.
 
 #### `POST /internal/runs/{run_id}/approve-session`
 
-The backend sends the decoded `SessionOpened` fields. The service recomputes `configHash`, checks parties, tokens, amounts, `maxOffers`, and expiry window against the provisioned expectation, and stores approval.
+The backend sends the decoded `SessionOpened` fields and the timestamp of the block that emitted the event ([ADR-044](decision_log.md)):
 
-Response `200`: `{ "approved": true, "config_hash": "0x…" }` or `409 session_mismatch` with the differing fields.
+```json
+{ "session_id": "0x…", "buyer": "0x…", "seller": "0x…", "base_token": "0x…", "quote_token": "0x…", "base_amount_minor": "10000000", "expires_at_ts": 1760001740, "max_offers": 8, "config_hash": "0x…", "opened_at_ts": 1759999940 }
+```
+
+The service recomputes `configHash` from the event's session fields and its own *provisioned* token addresses, and checks: the tokens, `base_amount_minor` and `max_offers` against the provisioned expectation; its own derived address in its own role's slot; a counterparty that is neither itself nor the zero address; and the expiry window `opened_at_ts < expires_at_ts <= opened_at_ts + session_duration_s` — shorter than provisioned by the inclusion delay, never longer, never already expired.
+
+Response `200`: `{ "approved": true, "config_hash": "0x…" }`. Otherwise `409 session_mismatch` with every differing field at once in `details.fields`, each as `{ "expected": …, "received": … }`. Approving the same session again returns the same response; a different session for a run that already approved one is `409 session_mismatch` naming the fields that differ from it. Allowed from `provisioned` and `approved`.
 
 #### `POST /internal/runs/{run_id}/setup-approval`
 
-The participant's ERC-20 `approve` of the exchange, needed once during setup ([ADR-040](decision_log.md)). The agent builds the whole transaction from provisioned state — the token is its role's (quote for the buyer, base for the seller), the spender is `expected_session.exchange_address`, the amount is `allowance_minor`, the chain is `expected_session.chain_id` — and signs it with the run's derived key. The caller supplies only what it must know about the chain:
+The participant's ERC-20 `approve` of the exchange, needed once during setup ([ADR-040](decision_log.md)). The agent builds the whole transaction from provisioned state — the token is its role's (quote for the buyer, base for the seller), the spender is `expected_session.exchange_address`, the amount is `allowance_minor`, the chain is `expected_session.chain_id` — and signs it with the run's derived key as an EIP-1559 transaction. The caller supplies only what it must know about the chain:
 
 ```json
 { "nonce": 0, "gas_limit": 70000, "max_fee_per_gas_wei": "2000000000", "max_priority_fee_per_gas_wei": "1000000000" }
@@ -503,11 +523,13 @@ Response `200`:
 { "raw_tx": "0x…", "tx_hash": "0x…", "from": "0x…", "token": "0x…", "spender": "0x…", "amount_minor": "250000000", "nonce": 0 }
 ```
 
-`422 validation_error` for a gas limit above the agent's bound or a priority fee above the fee cap; `409 invalid_state` before provisioning. Deterministic: the same request returns the same transaction.
+`422 validation_error` for a gas limit above the agent's bound — `AGENT_SETUP_GAS_LIMIT_MAX`, 100,000 by default ([ADR-042](decision_log.md)) — or whose worst-case cost, `gas_limit` times `max_fee_per_gas_wei`, is above `AGENT_SETUP_MAX_COST_WEI`, 10^16 wei (0.01 ETH) by default ([ADR-047](decision_log.md)), or with a priority fee above the fee cap or a nonce beyond `2^64 - 2`; the fees are decimal strings like every other amount. `409 invalid_state` before provisioning or after release. Deterministic: the same request returns the same transaction.
 
 #### `POST /internal/runs/{run_id}/turn`
 
-Body: the observation from [protocol.md](protocol.md) section 12 without the `mandate` field (the service injects its own). Also `turn` (integer) and `deadline_at` (ISO timestamp by which the service must answer).
+Body: the observation from [protocol.md](protocol.md) section 12 without the `mandate` field (the service injects its own), plus `turn` (an integer of at least 1) and `deadline_at` (ISO 8601 UTC ending in `Z`, by which the service must answer). A body that carries a `mandate` is `422`: the backend sends a mandate to an agent once, at provisioning.
+
+Before any policy is asked, the service validates the observation — with its own mandate injected — against `observation.v1.json` and then as value objects (`422 validation_error`), and checks it against what this instance approved: `run_id`, `role` and `my_address` must be its own and every `session` field must equal the approved session's (`409 session_mismatch`, with session fields named `session.<field>`), and `chain_time` must be before the session's `expiresAt` (`409 invalid_state`, `details.state = "session_deadline_passed"`). Then it checks the observation against itself ([ADR-046](decision_log.md), [protocol.md](protocol.md) section 12): history in ascending sequence order from 1, alternating from the buyer, each offer with all its fields and its digest recomputed from them under the approved session, the statuses, `expected_sequence`, `offers_remaining_for_me`, and `active_offer` as the last offer while it stands and null once it has expired. A contradiction is `422 observation_inconsistent` with every one named in `details.fields`, and nothing is signed; the controller rebuilds the observation from the chain and retries, up to five times, before moving the run to `RECOVERY_REQUIRED`. Allowed from `approved` only. The same `turn` with the same observation returns the first response; the same `turn` with a different observation is `409 idempotency_conflict`. `deadline_at` is checked for form in stage 2.2 and enforced against the model call from stage 3; the deterministic policy answers at once.
 
 Response `200`:
 
@@ -529,11 +551,15 @@ Response `200`:
 }
 ```
 
+`typed_message` carries the Solidity field names, because `export.v1.json` restricts its keys to them: `{ "sessionId", "configHash", "sequence", "proposer", "quoteAmount", "validUntil" }` for an offer, `{ …, "actor", "offerHash" }` for an accept, `{ …, "actor", "reason" }` for a close. Amounts are decimal strings; `sequence`, `validUntil` and `reason` are integers. Every field comes from the approved session, the validated decision, the observation's `expected_sequence` and `chain_time`, or the run's own address — never from the policy's output ([protocol.md](protocol.md) section 11).
+
+`decisions` has one record per attempt: the first, then at most `limits.repair_attempts` repairs, each given only this agent's own feedback from the attempt before. `validation.code` is one of the codes in [protocol.md](protocol.md) section 11.1. `observation_hash` is `json_sha256` of the observation the decision was made from, mandate included, so it equals the backend's `turns.observation_hash` exactly when the two agree on the mandate. When every attempt is refused, `status` is `model_failed`, `failure.code` is `repair_exhausted`, and `failure.detail` names only the number of attempts: the codes and the feedback are private and live in the decision records.
+
 The backend persists `decisions` verbatim as private records and `signed_action` as a `signed_actions` row. The service never calls this endpoint's result back; the backend supplies the confirmed outcome in the next observation's `history`.
 
 #### `POST /internal/runs/{run_id}/release`
 
-Called after the run reaches a terminal state. The service discards the mandate and key handle for that run. Idempotent.
+Called after the run reaches a terminal state. The body is empty or `{}`. The service discards the mandate and the signer for that run, and refuses every later call for it with `409 invalid_state`, `details.state = "released"`, for the rest of the process's life. A turn already deciding when the release arrives signs nothing: it checks again before signing and answers the same `409` ([ADR-048](decision_log.md)). Idempotent, including for a run the instance never knew. Response `200`: `{ "released": true }`.
 
 ---
 
@@ -545,18 +571,20 @@ Called after the run reaches a terminal state. The service discards the mandate 
 | 401 | `unauthorized` | Missing or invalid operator token or agent HMAC |
 | 403 | `reveal_required` | Private route without `X-Observer-Reveal: true` |
 | 404 | `not_found` | Unknown run, batch, operation, scenario, deployment |
+| 405 | `method_not_allowed` | Agent internal API: a method the route does not serve |
 | 409 | `idempotency_conflict` | Same key, different body |
 | 409 | `invalid_state` | Action not allowed in current run state; `details.state` and `details.allowed_from` |
 | 409 | `turn_in_progress` | Step or start while a turn is running |
 | 409 | `another_run_active` | A different run holds the lease |
 | 409 | `mandate_immutable` | Attempt to change a mandate after start |
 | 409 | `batch_not_local` | Batch requested on a non-local deployment |
-| 409 | `session_mismatch` | Agent service refused the on-chain session |
+| 409 | `session_mismatch` | Agent service refused the on-chain session, or a turn whose observation is of another run, party or session |
 | 409 | `key_ref_mismatch` | Agent service was asked to provision with a root key reference that is not its own ([ADR-039](decision_log.md)) |
 | 409 | `address_mismatch` | Agent service's derivation did not reproduce the address stored for the run ([ADR-039](decision_log.md)) |
 | 422 | `validation_error` | Field-level errors in `details.fields` |
+| 422 | `observation_inconsistent` | Agent service: the observation contradicts itself or the approved session; the controller rebuilds it and retries ([ADR-046](decision_log.md)) |
 | 422 | `deployment_mismatch` | Chain ID or code hash differs from manifest |
-| 503 | `dependency_unavailable` | RPC, database, agent service, or model provider down |
+| 503 | `dependency_unavailable` | RPC, database, agent service, or model provider down; an agent service whose signer did not load, with `details.dependency = "signer"` |
 | 500 | `internal_error` | Unhandled; `request_id` for correlation |
 
 Contract reverts are surfaced as `tx.status = reverted` with `revert_error` set to the decoded custom error name from [protocol.md](protocol.md) section 8.3, never as an HTTP error.
