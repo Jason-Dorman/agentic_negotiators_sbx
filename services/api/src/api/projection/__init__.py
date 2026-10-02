@@ -15,6 +15,7 @@ from api.projection.sentences import (
 )
 from api.projection.views import (
     TERMINAL_EVENTS,
+    TIMELINE_KIND,
     Parties,
     TimelineContext,
     build_timeline,
@@ -27,6 +28,7 @@ __all__ = [
     "BASE_SYMBOL",
     "QUOTE_SYMBOL",
     "TERMINAL_EVENTS",
+    "TIMELINE_KIND",
     "Parties",
     "Projector",
     "RunProjection",

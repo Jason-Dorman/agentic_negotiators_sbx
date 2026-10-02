@@ -118,14 +118,14 @@ One FastAPI process with modules that could later be split. Module boundaries ar
 | Module | Single responsibility | Depends on |
 |---|---|---|
 | `routes/` | HTTP and SSE surface; request validation; idempotency; operation IDs | controller, repositories |
-| `controller/` | Run lifecycle state machine; lease; pause and resume; abort; clone | turn executor, relay, validator, repositories |
-| `turns/` | Execute one turn per spec 9.2 | observation builder, agent client, relay, indexer |
+| `controller/` | Run lifecycle state machine; lease; setup; pause and resume; abort; recovery; clone (stage 2.5) | turn executor, relay, indexer, projection, observation builder, validator, agent client, repositories |
+| `turns/` | Execute one turn per spec 9.2; restore a restarted agent (ADR-048) | observation builder, agent client, relay, web3 adapter, repositories |
 | `observation/` | Build the allowlisted observation from projection and run config | repositories, protocol schemas |
 | `agent_client/` | Authenticated HTTP client to an agent service instance | protocol schemas |
 | `relay/` | Nonce management, gas, signing raw transactions with the relay key, outbox write-then-broadcast, rebroadcast, recovery, gas replacement within a fee ceiling ([ADR-050](decision_log.md)) | web3 adapter, repositories |
 | `indexer/` | Receipt polling, log decoding, block-hash tracking, canonical flag, reorg detection and rebuild, confirmation depth and finality, terminal-event balances and settlement verification | web3 adapter, repositories |
 | `projection/` | Derive session view, timeline, balances and the economic outcome from canonical events; the timeline-sentence renderer the indexer is handed ([ADR-024](decision_log.md)) | repositories |
-| `validation/` | Validate setup: manifest, bytecode, chain ID, funds, allowances, signer, RPC, model availability | web3 adapter, agent client |
+| `validation/` | Validate setup: manifest, bytecode, chain ID, relay and operator funds, confirmation threshold, agents' health, signer and model availability | web3 adapter, agent client, repositories |
 | `evidence/` | Replay and export | repositories |
 | `metrics/` | Per-run and per-batch metrics | repositories |
 | `chain/` | web3.py adapter, ABI loading, typed event decoding, RPC request counting by method ([ADR-061](decision_log.md)) | packages/protocol |
@@ -231,6 +231,8 @@ sequenceDiagram
 
 Mandates are sent to an agent service once, at provisioning. The backend never includes them in any later message.
 
+Provisioning happens inside the run's own unit of work (stage 2.4): if either agent does not provision the run, nothing of it is kept and an agent that did is told to release it, so a run in `draft` always has both wallets. On start, setup runs as steps the controller advances between indexer polls, each one first finding what it already sent in the outbox, so a restart carries setup on rather than repeating it ([ADR-063](decision_log.md)): `pre_setup` balances; the operator mints each party's initial balances; for each party, the controller fixes the setup approval's gas limit and fee caps, funds the wallet with exactly their product ([ADR-065](decision_log.md)), and once that is confirmed asks the agent for the approval on those terms; every setup transaction confirmed; `runs.session_id` written, then `createSession` broadcast; `SessionOpened` confirmed; both agents approve the session from the canonical event and its block's time; `post_setup` balances at the `SessionOpened` block, whose presence is what marks setup done ([ADR-069](decision_log.md)). An agent that refuses the opened session ends the run in `failed_setup` through an abort with reason 4 ([ADR-066](decision_log.md)). The approval's bytes are checked before they are relayed — sender, token, calldata, nonce, chain, gas and fee caps — not only the agent's description of them. An agent restarted during setup is provisioned again with its stored address and asked once more (ADR-048); an approval still not included `RELAY_REPLACE_AFTER_BLOCKS` after its broadcast is asked of its agent again at the same nonce with both fee caps up an eighth, the wallet topped up first, and resume or recovery quotes the terms afresh ([ADR-072](decision_log.md)).
+
 The participant wallets are fresh per run because their keys are derived per run inside each agent service ([ADR-039](decision_log.md)); the backend learns each address from the provisioning response and stores it with the derivation metadata. The two ERC-20 approvals are built and signed by the agents themselves from provisioned state and only broadcast by the backend ([ADR-040](decision_log.md)).
 
 ### 5.2 One turn (spec 9.2)
@@ -301,11 +303,13 @@ flowchart TD
     STATE -->|terminal on chain| FINAL[Record outcome]
 ```
 
-Acceptance A13 covers crash after broadcast and before receipt persistence.
+Acceptance A13 covers crash after broadcast and before receipt persistence, at the chain layer (stage 2.3) and with the whole controller restarted (stage 2.4).
+
+In the controller this is `RunController.recover`, run at process start: it waits until the old process's lease has expired (`RUN_LEASE_TTL_S`), retrying at a third of it, then takes the lease, reconciles the outbox, and drives the run again if it was `preparing` or `running`. A process that shuts down gracefully releases its lease, so its successor takes over at once. A turn interrupted before its signed action was recorded is asked again with the observation it stored — the agent answers an identical request with its first response — unless that observation has gone stale since, its active offer or its session past expiry, when the turn is closed and a fresh one built ([ADR-071](decision_log.md)); one interrupted after is handed to the relay as it stands. Neither asks for a new decision on the same state (FR-E2). A termination the run owed when the process died is on the run row, and the driver sends it first ([ADR-068](decision_log.md)).
 
 ### 5.5 Reorganization
 
-The indexer stores block hash and number per event, per recorded inclusion in `tx_outbox` and per balance snapshot. On each poll, before it reads anything new, it checks that every stored block hash above the RPC's finalized head, for runs not yet `TERMINAL`, still matches the canonical chain ([ADR-053](decision_log.md)). A block the RPC fails to return is an outage, not a mismatch: the adapter raises and the poll fails, rather than inventing a reorg. On mismatch it marks every row whose block the chain no longer has non-canonical, clears those transactions' inclusions back to `submitted`, invalidates those balance snapshots, appends a `chain.reorg` run event for each affected run in the same transaction ([ADR-058](decision_log.md)), and reports the reorg; a row whose block comes back is made canonical again ([ADR-055](decision_log.md)); the projection is computed from canonical rows each time it is asked, so it has rolled back with nothing further to invalidate. The controller sets the run to `PAUSED` with cause `reorg` (stage 2.4), and the relay reconciles the cleared transactions — a transaction reverted away is neither mined nor pooled and its nonce is free, so the stored bytes are sent again — before resume is permitted. The log scan re-reads every block above the finalized head on each poll, so a reorg that removed nothing the backend had stored, and is therefore invisible to the hash check, still has its new logs read. Acceptance A14 simulates this on Anvil with snapshot and revert at confirmation threshold 2.
+The indexer stores block hash and number per event, per recorded inclusion in `tx_outbox` and per balance snapshot. On each poll, before it reads anything new, it checks that every stored block hash above the RPC's finalized head, for runs not yet `TERMINAL` or `FAILED_SETUP`, still matches the canonical chain ([ADR-053](decision_log.md)). A block the RPC fails to return is an outage, not a mismatch: the adapter raises and the poll fails, rather than inventing a reorg. On mismatch it marks every row whose block the chain no longer has non-canonical, clears those transactions' inclusions back to `submitted`, invalidates those balance snapshots, appends a `chain.reorg` run event for each affected run in the same transaction ([ADR-058](decision_log.md)), and reports the reorg; a row whose block comes back is made canonical again ([ADR-055](decision_log.md)); the projection is computed from canonical rows each time it is asked, so it has rolled back with nothing further to invalidate. The controller sets the run to `PAUSED` with cause `reorg` (stage 2.4), and the relay reconciles the cleared transactions — a transaction reverted away is neither mined nor pooled and its nonce is free, so the stored bytes are sent again — before resume is permitted. The log scan re-reads every block above the finalized head on each poll, so a reorg that removed nothing the backend had stored, and is therefore invisible to the hash check, still has its new logs read. Acceptance A14 simulates this on Anvil with snapshot and revert at confirmation threshold 2.
 
 ### 5.6 Replay and export
 
@@ -326,18 +330,28 @@ stateDiagram-v2
     RUNNING --> PAUSED: pause / step complete
     PAUSED --> RUNNING: resume
     PAUSED --> PAUSED: step (one turn)
-    RUNNING --> RECOVERY_REQUIRED: unresolved RPC / nonce conflict /<br/>observation refused as inconsistent 5 times
+    RUNNING --> RECOVERY_REQUIRED: unresolved RPC or agent outage / nonce conflict /<br/>observation refused as inconsistent 5 times / agent refusal
     PAUSED --> RECOVERY_REQUIRED: reconcile failed
+    PREPARING --> RECOVERY_REQUIRED: unresolved RPC or agent outage<br/>during setup (ADR-063)
     RECOVERY_REQUIRED --> PAUSED: operator reconcile ok
+    RECOVERY_REQUIRED --> PREPARING: operator reconcile ok,<br/>setup unfinished (ADR-063)
     RUNNING --> TERMINAL
     PAUSED --> TERMINAL
     RECOVERY_REQUIRED --> TERMINAL: chain already terminal
-    PREPARING --> FAILED_SETUP: funding / session creation failed
+    PREPARING --> FAILED_SETUP: setup transaction reverted /<br/>session refused and aborted /<br/>aborted before a session (ADR-067)
+    RECOVERY_REQUIRED --> FAILED_SETUP: aborted or ended<br/>before setup finished (ADR-067)
     TERMINAL --> [*]
     FAILED_SETUP --> [*]
 ```
 
 `TERMINAL` is reached only when the chain session is Settled, Closed, Expired, or Aborted and the terminal event is canonical at the confirmation threshold. The **economic outcome** is a separate field derived from the terminal event type and reason code; see [data_model.md](data_model.md).
+
+The transitions are data in `api.controller.states.TRANSITIONS`, and a unit test compares them with this diagram, so the two cannot drift. A change of cause alone — a running run whose model failed, awaiting its abort — is not a transition. `VALIDATED → DRAFT` is taken when a validation that passed no longer does (stage 2.4); clone, from stage 2.5, edits configuration only by creating a new run. What moves a run where (stage 2.4, `api.controller`):
+
+- **To `RECOVERY_REQUIRED`**: an RPC outage that lasts `RPC_OUTAGE_LIMIT_S`, 60 s by default ([ADR-063](decision_log.md)); an agent that does not answer for as long ([ADR-064](decision_log.md)); an agent refusal the backend should never provoke, at once (ADR-064); an observation refused as inconsistent five times in a row ([ADR-046](decision_log.md)); a `nonce_conflict`, `unreachable` or `refused` reconciliation ([ADR-057](decision_log.md)); an indexer `RunProblem` ([ADR-059](decision_log.md)); a settlement whose receipt check fails ([ADR-052](decision_log.md)). Never an abort: the operator can still abort from `RECOVERY_REQUIRED`. Also: a transaction the node refused to accept, sent again and refused again (`refused`); a termination that reverted before the deadline (`termination_reverted`); and anything the driver did not expect, caught at the top of its loop (`internal_error`), so a run is never left `running` with nothing driving it.
+- **To `PAUSED`, cause `reorg`**: a `chain.reorg` run event the controller has not yet acted on; the relay reconciles at once, and resume reconciles again before it continues ([ADR-058](decision_log.md)).
+- **Ending a session early** — a model failure (abort reason 2), a budget ceiling (3), an execution failure (4), the operator's abort (1), a session an agent refused during setup (4, [ADR-066](decision_log.md)), the deadline reached (expiry) — is first recorded on the run (`termination_cause`, `termination_code`) in the unit of work that decided it, and only then sent by the driver, which acts on it before anything else: so it survives a crash or an outage, two aborts send one, and a fault crossing it cannot overwrite its cause ([ADR-068](decision_log.md)). It sends `abortSession` before the deadline and `expireSession` at or after it; a termination that reverted is followed by expiry once the deadline has passed. A run with no session — none recorded, or its `createSession` gone — has nothing to end on chain and is `failed_setup` at once, from `preparing` or `recovery_required` ([ADR-067](decision_log.md)). The state changes only when the terminal event is canonical at the threshold, to `failed_setup` when setup had not finished; until then the termination says why. While one is recorded, a decision that comes back is kept only as a private record and nothing of it is signed into the run, and resume and step are refused ([ADR-070](decision_log.md)).
+- **A paused run is not polled** unless something is in flight — a turn's action, a requested step, a termination. Resume reconciles and polls before anything continues, and polling only a run that needs it bounds a hosted RPC's bill ([Q40](open_questions.md)).
 
 ### 6.2 Turn state
 
@@ -389,7 +403,9 @@ The model client lives only in the agent service and is wrapped behind `ModelCli
 
 **RPC cost accounting ([ADR-061](decision_log.md)).** The chain adapter counts every JSON-RPC request it makes, by method, attributed to the run holding the lease; requests made outside any run, such as health checks, are logged but belong to no run's metrics. The metrics calculator prices the counts from an operator-maintained RPC price table beside the model price table, each with a `last_verified` date shown in the UI. No provider reports a per-request cost in its responses, so the figure is always an estimate and is labelled as one; the local chain's table entry is zero because Anvil really is free, and a provider with no table entry shows unknown, never zero.
 
-**Idempotency and concurrency.** One run active at a time enforced by a database advisory lock plus a `run_leases` row with expiry. Mutation routes take `Idempotency-Key` and store the response in `operations`. Relay nonces are serialized by the same lease.
+**Idempotency and concurrency.** One run active at a time enforced by the single-row `active_run` table plus a `run_leases` row with expiry ([ADR-019](decision_log.md)). The controller claims both when a run starts and releases them when it is `terminal` or `failed_setup`; it renews the lease on every tick and, alongside, at a third of `RUN_LEASE_TTL_S` (30 s), so a turn waiting on a model does not lose it. Mutation routes take `Idempotency-Key` and store the response in `operations`. Relay nonces are serialized by the same lease.
+
+**The controller's timing** (stage 2.4, `api.config.ControllerSettings`): the poll interval is the indexer's; an RPC or agent outage that lasts `RPC_OUTAGE_LIMIT_S`, 60 s, is `RECOVERY_REQUIRED` ([ADR-063](decision_log.md), [ADR-064](decision_log.md)); a call to an agent other than a turn waits `AGENT_TIMEOUT_S`, 10 s, and a turn the run's `model_timeout_s` for each attempt it may make, plus 15 s. The agents' URLs, shared secrets and root key references are `AGENT_A_URL`, `AGENT_A_SHARED_SECRET` and `BUYER_ROOT_KEY_REF` and their seller counterparts; the backend holds the references only.
 
 **Logging.** Structured JSON logs. Every line carries `run_id`, `turn_id`, and `component`. A redaction filter removes anything matching private-key, API-key, or mandate field patterns. Model request and response bodies are logged only to `decisions`, never to stdout.
 

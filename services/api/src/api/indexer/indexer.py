@@ -67,6 +67,7 @@ from api.db.enums import (
 )
 from api.db.protocols import Transactions, UnitOfWork
 from api.db.records import (
+    BalanceSnapshotRecord,
     ChainEventRecord,
     DeploymentRecord,
     Inclusion,
@@ -127,6 +128,7 @@ class _Poll:
     logs: dict[tuple[Digest, Digest, int], RawLog] = field(default_factory=dict)
     included: list[OutboxRecord] = field(default_factory=list)
     reverted: list[OutboxRecord] = field(default_factory=list)
+    dropped: list[OutboxRecord] = field(default_factory=list)
     problems: dict[tuple[uuid.UUID, str], RunProblem] = field(default_factory=dict)
 
     def problem(self, run_id: uuid.UUID, code: str, detail: str) -> None:
@@ -180,6 +182,7 @@ class Indexer:
             finalized=tuple(final),
             terminal=tuple(terminal),
             problems=tuple(poll.problems.values()),
+            dropped=tuple(poll.dropped),
         )
 
     # -----------------------------------------------------------------------------------------
@@ -335,7 +338,7 @@ class Indexer:
             included_at=self._clock(),
         )
         async with self._transactions.unit_of_work() as uow:
-            await self._drop_rivals(uow, row)
+            poll.dropped.extend(await self._drop_rivals(uow, row))
             included = await uow.outbox.mark_included(row.id, inclusion)
             if revert is not None:
                 sentence = self._renderer.execution_failure_sentence(revert)
@@ -347,7 +350,7 @@ class Indexer:
             poll.logs[(log.block_hash, log.tx_hash, log.log_index)] = log
 
     @staticmethod
-    async def _drop_rivals(uow: UnitOfWork, row: OutboxRecord) -> None:
+    async def _drop_rivals(uow: UnitOfWork, row: OutboxRecord) -> list[OutboxRecord]:
         """The mined transaction wins: every other live one at its nonce, or for its signed action,
         can never be mined as well, and the index of one live transaction per action is kept."""
         rivals = list(await uow.outbox.nonce_group(row.sender, row.nonce))
@@ -355,9 +358,11 @@ class Indexer:
             live = await uow.outbox.live_for_signed_action(row.signed_action_id)
             if live is not None:
                 rivals.append(live)
+        dropped = []
         for rival in rivals:
             if rival.id != row.id and rival.status in (TxStatus.PENDING, TxStatus.SUBMITTED):
-                await uow.outbox.update_status(rival.id, TxStatus.DROPPED)
+                dropped.append(await uow.outbox.update_status(rival.id, TxStatus.DROPPED))
+        return dropped
 
     async def _decode_revert(self, row: OutboxRecord, receipt: Receipt) -> str:
         """Replay the transaction to read its revert data (ADR-056).
@@ -585,6 +590,31 @@ class Indexer:
                 for snapshot in snapshots:
                     await uow.balances.add(snapshot)
         return TerminalConfirmed(run_id=run.id, event=event, settlement=settlement)
+
+    async def snapshot(
+        self, run_id: uuid.UUID, stage: SnapshotStage, number: int, parties: Mapping[Party, Address]
+    ) -> list[BalanceSnapshotRecord]:
+        """Each party's base, quote and ETH balance at a block, recorded once per stage and block.
+
+        The terminal stages are this module's own; the controller takes `pre_setup` and
+        `post_setup` through here (stage 2.4), so every snapshot is read the same way.
+        """
+        async with self._transactions.unit_of_work() as uow:
+            existing = [
+                snapshot
+                for snapshot in await uow.balances.canonical_for_run(run_id)
+                if snapshot.stage == stage and snapshot.block_number == number
+            ]
+        if existing:
+            return existing
+        snapshots = await self._balances(run_id, stage, number, parties)
+        recorded = []
+        async with self._transactions.unit_of_work() as uow:
+            for new in snapshots:
+                row = await uow.balances.add(new)
+                if row is not None:
+                    recorded.append(row)
+        return recorded
 
     async def _balances(
         self, run_id: uuid.UUID, stage: SnapshotStage, number: int, parties: Mapping[Party, Address]

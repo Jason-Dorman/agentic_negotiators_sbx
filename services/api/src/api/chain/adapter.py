@@ -94,6 +94,11 @@ class ChainAdapter(Protocol):
 
     async def eth_balance(self, address: Address, block_number: int) -> int: ...
 
+    async def code(self, address: Address) -> bytes:
+        """The runtime bytecode at an address at the head; empty where there is none. The setup
+        validator compares its keccak with the deployment manifest's `code_hashes`."""
+        ...
+
 
 def _digest(value: Any) -> Digest:
     return Digest(bytes(value))
@@ -287,6 +292,9 @@ class Web3ChainAdapter(ChainAdapter):
 
     async def eth_balance(self, address: Address, block_number: int) -> int:
         return int(await self._run(self._w3.eth.get_balance, address, block_number))
+
+    async def code(self, address: Address) -> bytes:
+        return bytes(await self._run(self._w3.eth.get_code, address, "latest"))
 
 
 def _revert_data(error: ContractLogicError) -> bytes:

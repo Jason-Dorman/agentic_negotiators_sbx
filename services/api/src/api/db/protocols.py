@@ -113,6 +113,13 @@ class RunRepository(Protocol):
         """
         ...
 
+    async def request_termination(
+        self, run_id: uuid.UUID, cause: str, code: int | None
+    ) -> RunRecord:
+        """Record that the run's session must be ended early (ADR-068). The first termination
+        recorded is kept: a later request leaves it as it is."""
+        ...
+
     async def set_versions(
         self,
         run_id: uuid.UUID,
@@ -346,6 +353,10 @@ class RunEventRepository(Protocol):
     async def after(
         self, run_id: uuid.UUID, cursor: int, limit: int = 500
     ) -> list[RunEventRecord]: ...
+
+    async def latest(self, run_id: uuid.UUID, event_type: str) -> RunEventRecord | None:
+        """The run's most recent event of one type, or None."""
+        ...
 
 
 class OperationRepository(Protocol):

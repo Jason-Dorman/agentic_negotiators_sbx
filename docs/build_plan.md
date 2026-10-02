@@ -135,7 +135,7 @@ ones worth remembering:
 
 ## Stage 2: Deterministic end-to-end run
 
-**Status: in progress, 25 September 2026; 2.1 to 2.3 complete.** Split into five sub-stages on 25 September 2026 at the
+**Status: in progress, 25 September 2026; 2.1 to 2.4 complete.** Split into five sub-stages on 25 September 2026 at the
 product owner's direction. As one change the stage was too large to build or to review well: its
 estimate is 8 to 12 days, and this plan already names it the risk concentration, where the outbox,
 indexer, reorg and recovery bugs live. Each sub-stage is one branch and one pull request and ends in
@@ -552,14 +552,33 @@ stored bytes again and it is re-indexed, canonical, in a new block, and confirme
 
 ### Stage 2.4: Run controller and turns
 
+**Status: complete, 2 October 2026**, on branch `feature/run-controller`, cut from `main`, and
+adversarially reviewed on 2 October (below). Every deliverable below is done and `make ci` is green:
+1,375 Python tests (174 of them new since 2.3), 115 Foundry tests, 31 Vitest tests, the backend at
+97.2 percent of lines, the agent's validator and signer still at 100 percent of branches, and all six
+import contracts kept. As with the earlier sub-stages, the pipeline itself has not yet run this
+branch on GitHub.
+
+Four questions the build raised were put to the product owner before any controller code was
+written, and answered on 1 October 2026: an RPC outage is `RECOVERY_REQUIRED` once it has lasted
+`RPC_OUTAGE_LIMIT_S`, 60 s, during setup as well, through a new `PREPARING → RECOVERY_REQUIRED`
+transition, and resume carries setup on ([ADR-063](decision_log.md), Q42); an unreachable agent is
+retried within the same limit and an unexpected agent refusal is `RECOVERY_REQUIRED` at once, never
+an abort ([ADR-064](decision_log.md), Q43); a participant wallet is funded with exactly its setup
+approval's worst-case fee ([ADR-065](decision_log.md), Q44); and a session an agent refuses during
+setup is aborted with `execution_failure` ([ADR-066](decision_log.md), Q45). A fifth, what an
+observation should say about a model's unparseable refused attempt, waits for stage 3 as
+[Q46](open_questions.md).
+
 **Deliverables**
-- `observation`: the allowlisted observation of [protocol.md](protocol.md) section 12, built for the
-  acting party only, with a test that it never reads the opponent's mandate row.
-- `agent_client` with HMAC, and `validation`, the setup validator of spec section 3.1.
-- `controller`: the run state machine of [architecture.md](architecture.md) section 6.1, the lease
-  and the single active run, setup (funding, minting, agent-signed approvals, `createSession`, and
-  session approval by both agents), pause, resume, abort, expiry, and recovery after a restart.
-- `turns`: the turn executor of spec section 9.2.
+- **done** — `observation`: the allowlisted observation of [protocol.md](protocol.md) section 12,
+  built for the acting party only, with a test that it never reads the opponent's mandate row.
+- **done** — `agent_client` with HMAC, and `validation`, the setup validator of spec section 3.1.
+- **done** — `controller`: the run state machine of [architecture.md](architecture.md) section 6.1,
+  the lease and the single active run, setup (funding, minting, agent-signed approvals,
+  `createSession`, and session approval by both agents), pause, resume, abort, expiry, and recovery
+  after a restart.
+- **done** — `turns`: the turn executor of spec section 9.2.
 - The obligations the agent service of 2.2 places on the controller: build `history` in ascending
   sequence order with `active_offer` null once its offer has expired ([ADR-046](decision_log.md));
   on `observation_inconsistent`, rebuild the observation from the chain and retry up to five times,
@@ -586,12 +605,132 @@ stored bytes again and it is re-indexed, canonical, in a new block, and confirme
     terminal, so recording the outcome is idempotent work, not a one-shot message;
   - after an execution failure, abort (spec 9.4): `signed_actions (run_id, sequence)` is unique
     across every status, so a reverted action's sequence is not reused within the run.
-- Runbook section 6 extended to run-level recovery.
+- **done** — Runbook section 6 extended to run-level recovery.
+- **done**, beyond the list — `api.composition`, the composition root stage 2.5's application
+  factory will call; `ControllerSettings` and the four `infra/.env.example` variables it reads; the
+  chain adapter's `code` read for the validator; a value on the relay's lifecycle transactions for
+  funding; the indexer's `snapshot` made public so the controller's `pre_setup` and `post_setup`
+  are read the same way as its own; and `failed_setup` runs no longer watched by the indexer
+  (ADR-053's amendment).
+
+**Confirmed by mutation, not by coverage.** Thirty-two deliberate breakages were applied one at a
+time, each run against the test aimed at it and counted only when that test *failed*, and the tree
+was checked by content hash afterwards. Thirty were killed at once: the observation reading the
+counterparty's mandate, an offer still standing at its `validUntil`, the buyer always acting, an
+observation built below the threshold; funding one wei over the worst case or with no value, setup
+blind to what it had already sent, the session id never written (listed here at first as "written
+after `createSession`", which is not the edit that ran — the adversarial review below caught it), a
+refused session
+taken for a defect; a reorg acted on repeatedly, a failed settlement check and a `RunProblem`
+ignored, the outage limit exclusive, a paused run always polled, a failed setup recorded as
+terminal, an execution failure aborted with the model's code; pause allowed while preparing,
+recovery that never carries setup on, a failed provisioning that releases no agent; the observation
+hash and the signed action left unchecked, a sixth inconsistency before recovery, a restarted agent
+not restored, a refused attempt's action published, a reverted action left in flight; a `503` taken
+for a refusal; a failed setup still watched; the threshold and the bytecode left unvalidated; a
+step never marked complete. Two survived. **A reorg left unreconciled** passed A14, because the
+relay's replacement of a stuck transaction re-sent the offer three blocks later anyway; A14 now
+requires the original bytes mined on the new fork immediately after the reorg tick, and kills it.
+The other removed a guard in front of the outcome that no driven run can reach, and the guard was
+deleted rather than given a test that could not fail.
+
+**What building it found, which the next sub-stages need.**
+
+1. **A setup step must find what it sent in the outbox, not in a label.** `wallets.funded_tx_hashes`
+   is written after the transaction is persisted, so a setup that checked it would mint twice after
+   a crash between the two. Setup decodes its own outbox rows instead, and the outage test counts
+   two mints and two fundings after a recovery mid-setup; the mutation that blinds setup to them is
+   killed there.
+2. **The agent's `observation_hash` is a free cross-check.** It covers the mandate the agent
+   injected, so comparing it with the stored hash tells the backend, at no cost, that both sides
+   decided on the same observation and the same mandate. A mismatch is now a refusal (ADR-064,
+   as built).
+3. **A paused run need not be polled.** Driving only what has something in flight — a turn's action,
+   a step, an abort — and reconciling on resume is equivalent for correctness and is what bounds a
+   hosted RPC's bill (Q40).
+4. **A test helper that sleeps can change the chain.** The harness's default sleep mines a block
+   above threshold 1; a test that injected its own non-mining sleep was still mined past the state
+   it was waiting for, through a helper that used the default. Every wait now goes through the one
+   injected sleep.
+5. **A substring is not a value.** A privacy assertion that the report never contains `100000000`
+   matched the relay's ETH balance. Whole-number matching is the check to use for amounts.
+6. **Provisioning belongs inside the run's unit of work.** Doing it after the run is committed
+   leaves a draft with no wallets that nothing can repair, because a wallet row needs the address
+   only an agent can give. Inside, a refusal leaves nothing and releases the agent that did answer.
+
+#### The adversarial review, 2 October 2026
+
+Six lenses over the change set — claims against reality, the state machine and concurrency, setup
+and funding, the turns and the agent boundary, the observation and privacy, and vacuity — each in
+its own copy of the tree with its own database, then two independent refutation attempts per
+finding, one on truth and one on impact: 36 agents in all. 56 candidates merged to 42 distinct; the
+14 most severe were verified, and all 14 survived both refutations; 28 were left open over the
+verification cap. Six of its questions went to the product owner and were answered on 2 October
+2026 ([ADR-067](decision_log.md) to [ADR-072](decision_log.md), Q47 to Q52). Every confirmed
+finding is fixed in this change set, and so are the open ones that were defects; each fix was then
+undone on its own and the test aimed at it shown to fail — 37 of them, all killed, one only after
+its test was moved to threshold 2, where the head and the `SessionOpened` block differ. The ones
+that mattered:
+
+- **A failed turn could end as a settlement.** The abort a model or execution failure owed lived
+  only in memory until it was persisted; one RPC error there and the next tick asked the agent for a
+  new decision, and a reviewer's run that should have been aborted with reason 2 settled. A
+  termination is now recorded on the run in the turn's own unit of work, and only the driver sends
+  it ([ADR-068](decision_log.md), migration 0003).
+- **Runs could be stuck for good, holding the only active-run slot**: abort refused while preparing
+  and doing nothing without a session ([ADR-067](decision_log.md)); a gas-replaced abort whose
+  successor reverted, waited on forever because `replaced` counted as live; a restart inside the
+  lease's 30 s, after which `recover` gave up rather than waited; an agent restarted during setup,
+  never provisioned again; an exception nothing caught, which killed the driver silently; RPC
+  failures in the act phase, which a good poll cleared every tick so the outage window never filled;
+  a broadcast the node refused during setup, never sent again.
+- **A reorg of a confirmed action could ask for a second decision**, because an observation was
+  built while the re-sent action was still unconfirmed; the builder now refuses until every action
+  is settled, which is what its comment had already claimed.
+- **Six legs of the signed-action check could each be deleted with the suite green**, because every
+  tamper also broke the signature; each leg is now tested alone with a re-signed message, and the
+  check gained what the contract checks first — the exact field set, the offer's window, the accept's
+  offer, the close's reason, a canonical (low-s) signature. The setup approval is now checked by its
+  bytes, not only by the agent's description of them.
+- Smaller, each with its test: a decision arriving after an abort was signed and relayed
+  ([ADR-070](decision_log.md)); a stale stored observation was asked again
+  ([ADR-071](decision_log.md)); setup approval terms survived a refusal and a fee rise
+  ([ADR-072](decision_log.md)); `post_setup` was snapshotted at an unconfirmed head
+  ([ADR-069](decision_log.md)); a fault crossing a termination overwrote its cause; a half-finished
+  restore was a defect rather than finished; `turn.decision` published the agent's raw decision
+  rather than the signed one; the outage windows survived a resume; two aborts sent two
+  transactions; resume or step erased an abort in flight; a second reorg while paused for one was
+  reconciled on every tick; state changes were decided on stale reads; a run started as the previous
+  one's task exited was never driven; `tx.status` was missing for replaced and dropped transactions;
+  `RunRequest` coerced `"2"` and `true` into a threshold; an agent whose provisioning answer was
+  lost was not released; and two claims in this section were false — a mutation listed as killed
+  that was not the edit named, and a recovery "in a new process" that was a second controller in the
+  same one.
+- **Not reached by the review, and still not**: real `python -m agent` processes, a truly
+  restarted backend, and Sepolia. Every result rests on Anvil and the in-process harness.
 
 **Exit condition:** driven in-process through the controller, A02 settles and A03 ends in a close,
 end to end on Anvil, with rows in every table a run touches. The A13 crash-recovery and A14 reorg
 tests pass at the run level — one settlement and one transaction after a crash, a run paused with
 cause `reorg` — and every transition in architecture 6.1 is exercised, illegal ones included.
+
+**Met**, by `services/api/tests/integration/test_a02_det_settlement.py`, `test_a03_infeasible.py`,
+`test_a13_crash_recovery.py`, `test_a14_reorg.py` and the controller suites beside them, with two
+real agent applications served in-process through the real HMAC. The deterministic pair settles at
+93.333333 mUSD after 80, 108, 86.666666, 102 and 93.333333, the settlement's balance deltas exactly
+its two legs and each wallet funded with exactly its approval's worst case; the infeasible pair uses
+all eight offers and the buyer closes with `terms_unacceptable`, no token moving; both runs leave
+rows in every table they touch and release the active run. A controller killed right after the node
+accepted the settlement is replaced by a second controller with its own lease holder, built from
+nothing but the database and the chain — in the same test process, not a new one — which takes the
+lease once the first's has expired, finds the transaction mined, sends nothing and records one
+settlement. An offer mined at depth 1 under
+threshold 2 and reverted away pauses the run with cause `reorg`, acted on once; reconcile sends the
+same bytes again and resume carries the run to settlement. The transition table is compared with
+the diagram of architecture 6.1, all 64 pairs of states are checked, and every drawn transition is
+driven on Anvil — `VALIDATED → DRAFT` by a validation that no longer passes, the two of ADR-063 by
+an outage in setup, `RECOVERY_REQUIRED → TERMINAL` and ADR-067's `RECOVERY_REQUIRED → FAILED_SETUP`
+by an abort from a recovery.
 
 ### Stage 2.5: Operator API, evidence and Compose
 

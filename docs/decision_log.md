@@ -416,6 +416,7 @@ The database stores the derived address and the derivation metadata — the root
 **Rationale:** The finalized head is the chain's own statement of what can no longer change, which a fixed depth only approximates; spec 9.3 already ties "finalized" to it.
 **Consequences:** architecture 5.5; the stage 2.3 reorg tests run at threshold 2 on Anvil. On Sepolia a poll re-reads roughly 64 to 100 blocks of the exchange's logs in one `eth_getLogs`.
 **Correction (stage 2.3 review, 1 October 2026):** this entry first said the re-read was "well inside a free-tier budget". It is not: Alchemy's free tier caps `eth_getLogs` at 10 blocks, so with the default `INDEXER_LOG_CHUNK_BLOCKS` of 2,000 nothing would be indexed on it. Pay As You Go allows the range. The cost there, at $0.525 per million compute units (Alchemy's PAYG FAQ, 1 October 2026), is about 220 compute units a poll — two block reads, one per stored height above the finalized head, one `eth_getLogs`, the receipts — so about $0.10 per hour of polling at 4 s, and about $75 a month only if polling never stopped. Which plan Sepolia runs on, and with what usage limit, is [Q40](open_questions.md).
+**Amendment (stage 2.4, 1 October 2026):** a run in `failed_setup` is no longer watched either. Its session never opened, or was aborted and its outcome recorded ([ADR-066](#adr-066-a-session-an-agent-refuses-during-setup-is-aborted-with-execution_failure)), and watching it would repeat its terminal event on every poll for good. `RunRepository.with_open_sessions` excludes both states.
 
 ## ADR-054: An action the node predicts will revert is still broadcast, at a fallback gas limit
 **Status:** accepted (Q33, answered by the product owner, 30 September 2026)
@@ -479,3 +480,70 @@ The database stores the derived address and the derivation metadata — the root
 **Decision:** The on-chain two-phase design, built **after the current build finishes** — v0.1 continues exactly as specified, settles atomically on acceptance, and freezes protocol version 1. The feature is protocol version 2: a new pending-approval session status, a split of `acceptAndSettle` into an acceptance-recording call and an operator-approved settlement call, new events and errors, an EIP-712 domain version bump, and a new deployment. The product owner also decided the rejection semantics: **rejection resumes the negotiation** rather than ending the session.
 **Rationale:** Recording the acceptance on-chain makes the pending agreement public evidence in its own right and frees the approval window from the offer lifetime; deferring it keeps the stage-1 contract frozen (build_plan working agreements) and keeps v0.1 finishable.
 **Consequences:** PRD 4.2 gains the feature as deferred-but-wanted; build_plan gains a post-v0.1 note; protocol.md is untouched until the feature's own design begins. Design work the feature will need its own ADRs for: resumption must clear or invalidate the accepted offer, or the accepting agent — whose mandate still allows the price — simply re-accepts; the rejection has to reach both agents, which is an addition to the observation allowlist (protocol 12) and an observation schema bump; a resumed negotiation needs offer opportunities left, so a rejection with none remaining ends in close or expiry, not a new price; the accepted-but-unsettled state FR-P5 was written to exclude will exist and needs its own expiry and balance rules; and the review panel shows the run's cost metrics ([ADR-061](#adr-061-a-runs-costs--gas-model-and-rpc--are-recorded-per-run-and-surfaced-in-the-ui)) beside the terms. Whether approval is required on every run or per-run configurable interacts with [Q41](open_questions.md): batch runs cannot wait on a human.
+
+## ADR-063: An RPC outage that outlasts `RPC_OUTAGE_LIMIT_S` is `RECOVERY_REQUIRED`, in setup as in negotiation
+**Status:** accepted (Q42, answered by the product owner, 1 October 2026)
+**Context:** Spec 9.4 and FR-E6 say an *unresolved* RPC outage is `RECOVERY_REQUIRED`, and ADR-060 made a single call's wait honest, but nothing said how long an outage lasts before it counts as unresolved. A poll that raises `RpcUnavailableError` is an outage, not a result (stage 2.3); one failed poll is not a reason to stop a run. Separately, [architecture.md](architecture.md) section 6.1 had no path from `PREPARING` to `RECOVERY_REQUIRED`: an outage during setup could only be `FAILED_SETUP`, although once `createSession` has been sent nobody can tell whether a session opened on chain.
+**Decision:** `RPC_OUTAGE_LIMIT_S`, default 60. The controller retries at the poll interval, and an outage that lasts the whole limit — consecutive failures, measured by wall clock from the first — moves the run to `RECOVERY_REQUIRED` with cause `rpc_timeout`. The same applies during setup, through a new transition `PREPARING → RECOVERY_REQUIRED`; every setup step looks up what it already did before it acts, so the operator's resume carries setup on from where it stopped rather than starting again.
+**Rationale:** Integrity over availability (NFR-1), without stopping a run for a hiccup. Sixty seconds rides out a provider's brief faults and is well inside a default 600-second offer lifetime. A setup outage after `createSession` is the case where `FAILED_SETUP` would be a guess.
+**Consequences:** architecture 6.1 gains the transition; `api.config` and `infra/.env.example` gain the setting; runbook 6.
+
+## ADR-064: An unreachable agent is retried within the outage limit; an unexpected refusal is `RECOVERY_REQUIRED` at once
+**Status:** accepted (Q43, answered by the product owner, 1 October 2026)
+**Context:** The architecture names model failure (an abort with reason 2) and an inconsistent observation (five retries, then `RECOVERY_REQUIRED`, ADR-046), but not an agent service that does not answer — refused connection, timeout, a `503` from a signer that did not load — nor one that refuses a request in a way the backend should never provoke: `session_mismatch`, `validation_error` or `idempotency_conflict` on a turn.
+**Decision:** An unreachable agent is retried with the same turn number and the same stored observation, which the agent's idempotency makes safe (api_contract 6), until `RPC_OUTAGE_LIMIT_S` (ADR-063) has passed; then the run moves to `RECOVERY_REQUIRED` with cause `agent_unavailable`. An unexpected refusal is a backend defect, so the run moves to `RECOVERY_REQUIRED` at once with the refusal's code as its cause. Neither is an abort.
+**Rationale:** ADR-046's reasoning carries over: aborting would record our own fault on chain as the run's outcome, and the operator can still abort from `RECOVERY_REQUIRED`. Reusing one limit keeps the configuration small.
+**Consequences:** architecture 6.1's `RECOVERY_REQUIRED` causes; runbook 6.
+**As built (stage 2.4):** an answer the backend can check and finds wrong is treated as a refusal it should never see, with the same result. A signed action whose signer, typed signer, sequence or session is not the turn's, whose digest does not recompute from its own fields, or whose signature does not recover to its signer is `agent_signed_action_mismatch`; decision records over an observation hash other than the one the backend stored — the agent decided on another mandate, most likely — are `agent_observation_hash_mismatch`. Nothing of either is kept; the turn is closed with the code.
+
+## ADR-065: A participant wallet is funded with exactly its setup approval's worst-case fee
+**Status:** accepted (Q44, answered by the product owner, 1 October 2026)
+**Context:** Spec section 8 has the operator fund each fresh wallet with "enough test ETH for setup approvals", and nothing said how much. On Sepolia this is real test ETH from the operator's wallet, and whatever is left over stays in a per-run wallet nobody will use again.
+**Decision:** The controller first fixes the approval's gas limit — the node's estimate plus a quarter, never above `AGENT_SETUP_GAS_LIMIT_MAX`'s default of 100,000 — and its fee caps, from one fee quote under the relay's policy; it then funds the wallet with exactly `gas_limit × max_fee_per_gas`, and asks the agent for an approval with those same figures.
+**Rationale:** It is the least that guarantees the approval can be included at the fees it was signed with: about 0.0002 ETH per wallet at three gwei on Sepolia, nothing on Anvil.
+**Consequences:** `TxKind.FUND_ETH` transactions carry a value, so the relay's lifecycle submission takes one; runbook 7.
+
+## ADR-066: A session an agent refuses during setup is aborted with `execution_failure`
+**Status:** accepted (Q45, answered by the product owner, 1 October 2026)
+**Context:** [data_model.md](data_model.md) section 3.3 anticipates a session opened during setup and then refused by an agent's `approve-session`: it is aborted and the run's setup failed. No abort code was named for it.
+**Decision:** Reason 4, `execution_failure` — a required step that cannot proceed (protocol 10). The run ends `failed_setup` with outcome `aborted`, reason 4, once the abort is canonical at the threshold, and its `state_cause` is `session_refused`.
+**Rationale:** The closest of the four codes, and the only one that does not claim a human pressed Abort. Finer causes live in the run record, as protocol 10 says.
+**Consequences:** None outside the controller; data_model 3.3's existing constraint already allows `aborted` with `failed_setup`.
+
+## ADR-067: Abort ends a run with no session as `failed_setup`, and frees the active run
+**Status:** accepted (Q47, answered by the product owner, 2 October 2026)
+**Context:** The adversarial review of stage 2.4 found that abort was refused while a run was `preparing` and did nothing for a `recovery_required` run whose setup had not opened a session, so a setup fault that persisted held the single active run for good — while the runbook called abort "always the way out".
+**Decision:** Abort is allowed from `preparing` too. Where no session can exist — no `session_id`, or its `createSession` reverted or was dropped — the run moves at once to `failed_setup`, cause `abort_requested`, and the active run, the lease and both agents are released. Where a `createSession` is in flight, the termination is recorded and the session is aborted once it opens. A session aborted before setup finished (no `post_setup` snapshot) ends `failed_setup`, from `preparing` or from `recovery_required`; architecture 6.1 gains `RECOVERY_REQUIRED → FAILED_SETUP`.
+**Rationale:** Abort must always be able to end a run; a run that never opened a session has nothing to abort on chain, and its setup failed.
+**Consequences:** architecture 6.1, api_contract 2.2, runbook 6.
+
+## ADR-068: A termination is recorded on the run before it is sent, and its cause is kept apart from the fault cause
+**Status:** accepted (Q48, answered by the product owner, 2 October 2026)
+**Context:** The review found that the decision to end a session early lived only in memory between closing a failed turn and persisting the abort: one RPC error there made the next tick ask the agent for a new decision, and a run that should have been aborted with reason 2 settled. It also found that a fault crossing a termination in flight overwrote the termination's cause.
+**Decision:** `runs` gains `termination_cause TEXT NULL` and `termination_code SMALLINT NULL` (1–4, null for an expiry), written in the same unit of work as whatever decides the session must end: the turn closed as a model or execution failure, the operator's abort, the session refused during setup, the deadline reached. Only the driver sends the termination, and it acts on a recorded one before anything else, so it is sent after a crash or an outage as surely as before. When the outcome is recorded, the run's final `state_cause` is the termination cause where there is one.
+**Rationale:** The intent to end a session is a decision with on-chain consequences; like a signed action, it is persisted before it is acted on.
+**Consequences:** migration 0003; data_model 3.3; architecture 6.1; api_contract 2.2.
+
+## ADR-069: `post_setup` is snapshotted at the `SessionOpened` block, once confirmed
+**Status:** accepted (Q49, answered by the product owner, 2 October 2026)
+**Context:** `post_setup` was taken at the head when setup finished — a block not yet at the confirmation threshold — so a one-block reorg could invalidate it and leave a healthy run without the balances every observation reads.
+**Decision:** It is taken at the block that emitted `SessionOpened`, after that event is confirmed at the run's threshold. Every setup transaction is confirmed before `createSession` is sent, so that block's balances include all of them.
+**Consequences:** data_model 3.12.
+
+## ADR-070: A recorded termination stops decisions; resume and step are refused while one is in flight
+**Status:** accepted (Q50, answered by the product owner, 2 October 2026)
+**Context:** An abort arriving while an agent was deciding did not stop the decision from being signed into the run and relayed after `abortSession`; resume or step during an abort was accepted and erased the abort's cause.
+**Decision:** A decision that comes back after a termination was recorded is kept as a private decision record and nothing else: no signed action, no transaction; its turn closes with `termination_requested`. The check is made under the run's row lock, in the unit of work that would persist the action, so an abort committed first always wins. Resume and step are `409 invalid_state` while a termination is recorded and the run has not ended.
+**Consequences:** api_contract 2.2.
+
+## ADR-071: A stored observation that has gone stale is not asked again; its turn closes and a fresh one is built
+**Status:** accepted (Q51, answered by the product owner, 2 October 2026)
+**Context:** ADR-064 re-asks an unreachable agent with the stored observation and turn number. After a long outage or a restart, that observation's active offer may have expired or its session's deadline passed, and a decision on it would revert on chain and record our own delay as an execution failure.
+**Decision:** Before a re-ask, the controller compares the stored observation with chain time: if its `active_offer` has reached `valid_until`, or chain time has reached the session's `expires_at`, the turn closes with `observation_stale` and the next turn is built from the chain. Otherwise ADR-064 stands.
+**Consequences:** architecture 5.4, runbook 6.
+
+## ADR-072: Setup approval terms are re-quoted on resume and when an approval is stuck
+**Status:** accepted (Q52, answered by the product owner, 2 October 2026)
+**Context:** The terms of a participant's setup approval (ADR-065) were cached in memory and survived a refusal and a resume; after a fee rise an agent-signed approval could neither be mined nor replaced, because the relay holds no key for it (ADR-050).
+**Decision:** Resume and start-up recovery forget the cached terms, so they are quoted again. An approval still not included `RELAY_REPLACE_AFTER_BLOCKS` after its broadcast is asked of the agent again at the same nonce with both fee caps raised as ADR-050 raises them — the agent signing its own replacement — and the wallet is topped up first when the new worst case exceeds its balance. Funding is never reduced: a wallet already holding more than the new worst case gets nothing more.
+**Consequences:** architecture 5.1, runbook 7.

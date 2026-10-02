@@ -1,7 +1,53 @@
-"""The run lifecycle state machine of architecture.md section 6.1: lease, pause and resume, abort,
-clone, recovery.
+"""The run lifecycle state machine of docs/architecture.md section 6.1: the operations, the lease
+and the single active run, setup, pause and resume, abort, expiry, and recovery after a restart.
 
-Arrives in stage 2.4 of docs/build_plan.md; see docs/architecture.md sections 5.4 and 6.1. The
-package exists from stage 2.1 so that the import contract in `.importlinter` can name it and be
-enforced from the first backend code.
+Built in stage 2.4 of docs/build_plan.md. `controller.py` has the operations and their states,
+`driver.py` what drives an active run between them, `setup.py` the path from a validated run to an
+approved session, and `states.py` the transitions as data.
 """
+
+from api.controller.controller import AgentProvisioningError, RunController
+from api.controller.driver import Outage, Progress, RunDriver, RunStates
+from api.controller.errors import (
+    AnotherRunActiveError,
+    ControllerError,
+    InvalidStateError,
+    RunNotFoundError,
+    RunRequestError,
+    TurnInProgressError,
+)
+from api.controller.requests import RunRequest
+from api.controller.setup import ApprovalTerms, SessionSetup, SetupStatus
+from api.controller.states import (
+    ACTIVE,
+    FINISHED,
+    TRANSITIONS,
+    InvalidTransitionError,
+    allowed,
+    require_transition,
+)
+
+__all__ = [
+    "ACTIVE",
+    "FINISHED",
+    "TRANSITIONS",
+    "AgentProvisioningError",
+    "AnotherRunActiveError",
+    "ApprovalTerms",
+    "ControllerError",
+    "InvalidStateError",
+    "InvalidTransitionError",
+    "Outage",
+    "Progress",
+    "RunController",
+    "RunDriver",
+    "RunNotFoundError",
+    "RunRequest",
+    "RunRequestError",
+    "RunStates",
+    "SessionSetup",
+    "SetupStatus",
+    "TurnInProgressError",
+    "allowed",
+    "require_transition",
+]

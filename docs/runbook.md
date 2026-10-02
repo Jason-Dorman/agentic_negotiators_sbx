@@ -451,10 +451,10 @@ they are tells you where to look.
 
 ## 6. Recovering pending transactions
 
-The transaction half is stage 2.3's relay and indexer, described here. The run half — when recovery
-runs, and what moves a run to `RECOVERY_REQUIRED` — is the controller's, and is added in stage 2.4.
-Until then the controller is not built, so nothing in a running backend triggers these steps; they
-are exercised by the integration suite, which is where every claim below was checked.
+The transaction half is stage 2.3's relay and indexer; the run half — when recovery runs, what moves
+a run to `RECOVERY_REQUIRED`, and how an operator brings one back — is the stage 2.4 controller's,
+at the end of this section. Until stage 2.5 there are no routes, so the controller's operations are
+called in-process; the integration suite is where every claim below was checked.
 
 ### What the outbox holds
 
@@ -575,12 +575,101 @@ psql "$DATABASE_URL" -c "
     FROM chain_events WHERE run_id = '<run id>' ORDER BY block_number, log_index, created_at"
 ```
 
-A run already `terminal` is not watched ([Q20](open_questions.md), deferred to stage 5).
+A run already `terminal` is not watched ([Q20](open_questions.md), deferred to stage 5), and
+neither is one in `failed_setup`: its session never opened, or was aborted and its outcome
+recorded.
+
+### The run: what moves it, and how to bring it back
+
+The controller drives one active run at a time ([ADR-019](decision_log.md)). A run in `preparing` or
+`running` is polled every `INDEXER_POLL_INTERVAL_S`; a `paused` run only while something is still in
+flight — a turn's action, a requested step, an abort. A paused run with nothing in flight costs no
+RPC requests.
+
+**The run's state and cause:**
+
+```sh
+psql "$DATABASE_URL" -c "
+  SELECT state, state_cause, outcome_kind, outcome_reason_code FROM runs WHERE id = '<run id>'"
+psql "$DATABASE_URL" -c "
+  SELECT cursor, event_type, data FROM run_events WHERE run_id = '<run id>' ORDER BY cursor DESC LIMIT 20"
+```
+
+**What moves a run to `RECOVERY_REQUIRED`**, by `state_cause`. None of these is an outcome: the
+outcome stays `pending`, and an unresolved fault is never recorded as a no-deal result (FR-E6).
+
+| Cause | What happened | What to do |
+|---|---|---|
+| `rpc_timeout` | The RPC did not answer for `RPC_OUTAGE_LIMIT_S`, 60 s by default ([ADR-063](decision_log.md)). Also from `preparing`: an outage during setup | Check the endpoint (above). Resume once it answers |
+| `agent_unavailable` | An agent did not answer — refused connection, timeout, a `503` from a signer that did not load — for as long ([ADR-064](decision_log.md)) | Check the agent's process and its log for `signer_unavailable`; resume once `GET /internal/health` answers with `signer_ok: true`. The turn is asked again with the same observation |
+| `nonce_conflict`, `unreachable`, `refused` | A reconciliation needed a person: the outcome table above ([ADR-057](decision_log.md)) | As the table says; usually fund the relay, or find what used its key |
+| `observation_inconsistent` | An agent refused five observations in a row as contradictory ([ADR-046](decision_log.md)). A backend defect or a persistently stale read | Compare the last turns' `observation` with the chain; resume rebuilds it again |
+| `invalid_confirmation_threshold`, `session_opening_missing` | The indexer's `RunProblem` for the run ([ADR-059](decision_log.md)) | A defect in the run's configuration or the indexer's records; abort |
+| `settlement_check_failed` | A settlement's receipt did not show exactly the two signed legs (architecture 5.3) | Do not resume. Reconstruct the session (section 5) and compare |
+| `agent_<code>`, `observation_<code>` | An agent refused something the backend should never send, or the backend could not build an observation — the code says which ([ADR-064](decision_log.md)) | A defect; the turn is closed with the code as its `failure_code`. Resume once fixed, or abort |
+| `termination_reverted` | An abort or expiry reverted and the session is still open before its deadline | Look at the transaction's `last_error`. The termination stays recorded; once the deadline passes an abort sends `expireSession` |
+| `internal_error` | Something the driver did not expect; the exception is in the log line `run.driver_failed` | A defect. Resume once understood, or abort |
+
+A run that ends `failed_setup` carries why in its cause: `<kind>_reverted` for a setup transaction that reverted (`mint_reverted`, `fund_eth_reverted`, `approve_reverted`, `create_session_reverted` — its `last_error` says why), `session_refused` for a session an agent refused ([ADR-066](decision_log.md)), or `abort_requested`.
+
+**Resume from `RECOVERY_REQUIRED`** reconciles the run's outbox, polls once, and decides from the
+chain: `terminal` if the session has ended there, `paused` (cause `recovered`) if the negotiation can
+go on, or `preparing` if setup had not finished — setup then carries on from where it stopped, and
+finds what it already sent in the outbox rather than sending it again ([ADR-063](decision_log.md)).
+A run carried on from setup this way pauses once its session is open; resume it again to run.
+
+**Abort** works from `preparing`, `running`, `paused` and `recovery_required`, so it is always the
+way out of a run that cannot go on ([ADR-067](decision_log.md)). It is recorded on the run first
+(`termination_cause`, `termination_code`), and the controller sends it ([ADR-068](decision_log.md)):
+before the session's deadline `abortSession` from the operator key, which needs no participant key;
+at or after it, `expireSession` from the relay. A run with no session yet is `failed_setup` at once,
+with no RPC needed, and the active run is freed. Otherwise the run keeps its state until the
+termination is canonical at the threshold; a settlement that lands first wins (spec 9.4). Abort is
+also how to restart a recorded termination that stopped for a fault — a model failure's abort that
+met an outage, say: the cause recorded first is kept. While a termination is recorded, resume and
+step are refused ([ADR-070](decision_log.md)); to see one:
+
+```sh
+psql "$DATABASE_URL" -c "
+  SELECT state, state_cause, termination_cause, termination_code FROM runs WHERE id = '<run id>'"
+```
+
+**A reorganisation** pauses a running run with cause `reorg` and reconciles at once; a turn in
+flight completes. Resume reconciles again and continues. During setup the run stays `preparing`,
+cause `reorg`, and pauses when its session is open rather than starting.
+
+**After a backend restart**, `RunController.recover` waits until the old process's lease has
+expired (`RUN_LEASE_TTL_S`, 30 s by default) — at once if the old process shut down gracefully,
+which releases it — then reconciles the outbox, and drives the run again if it was `preparing` or
+`running`; a `paused` run stays paused (architecture 5.4). A turn interrupted before its action was
+recorded is asked again with the observation it stored, and the agent answers an identical request
+with its first response — unless the observation has gone stale since, its offer or its session past
+expiry, when the turn closes `observation_stale` and a fresh one is built
+([ADR-071](decision_log.md)). One interrupted after is handed to the relay as it stands. Never a new
+decision on the same state (FR-E2). Two processes never drive one run: a live lease is waited for,
+not taken.
+
+**An agent restarted** mid-run answers `unprovisioned` — or `provisioned`, when a restore stopped
+between provisioning and approval. The controller re-provisions it with the stored address,
+approves the session again from the canonical `SessionOpened`, and asks again
+([ADR-048](decision_log.md)); during setup, before any session exists, it is provisioned again and
+asked for its approval once more. The derived address must match or the run goes to
+`RECOVERY_REQUIRED` with `agent_restore_address_mismatch`.
 
 ## 7. Funding a testnet demonstration
 
-Stage 5 completes this section. What is known now, from stage 2.3, is what the indexer costs on the
-RPC.
+Stage 5 completes this section. What is known now, from stages 2.3 and 2.4, is what the indexer
+costs on the RPC and what setup costs the operator.
+
+**Each run's participant wallets are funded by the operator** with exactly the worst-case fee of
+their setup approval — its gas limit times its fee cap ([ADR-065](decision_log.md)): about 0.0002
+ETH per wallet at three gwei, so the operator key needs about 0.0004 Sepolia ETH a run for this,
+plus its own gas for funding, minting and `createSession`. What a wallet does not spend stays in it;
+nothing sweeps it back. An approval stuck past `RELAY_REPLACE_AFTER_BLOCKS` is signed again by its
+agent with both fee caps up an eighth, and the wallet topped up to the new worst case first
+([ADR-072](decision_log.md)); funding only ever grows. If the operator key cannot pay for a setup
+transaction, the node refuses it and the run goes to `RECOVERY_REQUIRED`, cause `refused`: fund the
+operator and resume, and setup sends the same bytes again.
 
 **The Sepolia RPC must allow wide `eth_getLogs` ranges.** On every poll the indexer re-reads every
 block above the finalized head — about 64 to 100 blocks on Sepolia — in one `eth_getLogs`
@@ -592,7 +681,8 @@ plan and limit to use is [Q40](open_questions.md), still open.
 1 October 2026): about 220 compute units a poll, so about **$0.10 per hour of polling** at the
 Sepolia poll interval of 4 s; a 30-minute run about $0.05; the relay's own calls under $0.001 an
 action. Polling around the clock for a month would be about 145M compute units, about $75 — the
-stage 2.4 controller polls only while a run is active. **Set a usage limit** in the Alchemy
+stage 2.4 controller polls only while a run is being driven, and a paused run with nothing in flight
+is not polled at all (section 6). **Set a usage limit** in the Alchemy
 dashboard (Billing Settings, as a compute-unit amount or its dollar value): usage stops at it and
 nothing beyond it is charged. $5 a month is about 9.5M compute units, around 45 hours of active
 polling.

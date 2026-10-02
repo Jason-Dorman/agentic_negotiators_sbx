@@ -83,3 +83,5 @@ class PollReport:
     #: until the controller makes the run terminal (ADR-058).
     terminal: tuple[TerminalConfirmed, ...]
     problems: tuple[RunProblem, ...] = ()
+    #: Rivals of a transaction mined this poll, at its nonce or for its action: now `dropped`.
+    dropped: tuple[OutboxRecord, ...] = ()
