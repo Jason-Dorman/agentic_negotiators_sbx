@@ -144,6 +144,8 @@ class RunRecord(_FromRow):
     session_expires_at_ts: int | None
     started_at: datetime | None
     terminal_at: datetime | None
+    termination_cause: str | None
+    termination_code: int | None
     created_at: datetime
     updated_at: datetime
 

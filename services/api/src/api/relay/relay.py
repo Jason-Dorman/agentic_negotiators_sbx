@@ -229,15 +229,19 @@ class Relay:
         data: bytes,
         *,
         as_operator: bool = False,
+        value: int = 0,
     ) -> OutboxRecord:
-        """A lifecycle transaction: `expireSession` from the relay; create, abort or mint from the
-        operator. The caller builds the calldata with `ExchangeCodec`."""
+        """A lifecycle transaction: `expireSession` from the relay; create, abort, mint or a
+        participant's test-ETH funding from the operator. The caller builds the calldata with
+        `ExchangeCodec`; `value` is in wei and is non-zero only for funding (ADR-065)."""
         signer = self._relay
         if as_operator:
             if self._operator is None:
                 raise RelayError("this relay was given no operator key")
             signer = self._operator
-        row = await self._persist(run_id, kind, signer, Address(to), data)
+        if value < 0:
+            raise RelayError("a transaction's value cannot be negative")
+        row = await self._persist(run_id, kind, signer, Address(to), data, value=value)
         return await self._broadcast(row)
 
     async def submit_presigned(
@@ -278,11 +282,12 @@ class Relay:
         data: bytes,
         *,
         signed_action_id: uuid.UUID | None = None,
+        value: int = 0,
     ) -> OutboxRecord:
         fees = initial_fees(await self._chain.fee_quote(), self._policy)
         try:
             estimate: int | None = await self._chain.estimate_gas(
-                CallRequest(sender=signer.address, to=to, data=data)
+                CallRequest(sender=signer.address, to=to, data=data, value=value)
             )
         except ExecutionRevertedError:
             estimate = None  # broadcast anyway; the contract decides (ADR-054)
@@ -296,7 +301,7 @@ class Relay:
                     "chainId": self._chain_id,
                     "nonce": nonce,
                     "to": to,
-                    "value": 0,
+                    "value": value,
                     "data": data,
                     "gas": gas_limit(estimate, self._policy),
                     "maxFeePerGas": fees.max_fee_per_gas,

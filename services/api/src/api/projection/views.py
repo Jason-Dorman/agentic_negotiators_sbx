@@ -49,7 +49,7 @@ _STATUS_AFTER: Final = {
     "SessionAborted": "aborted",
 }
 
-_TIMELINE_KIND: Final = {
+TIMELINE_KIND: Final = {
     "OfferRecorded": "offer",
     "AcceptanceRecorded": "accept",
     "SettlementCompleted": "settle",
@@ -182,7 +182,7 @@ def _entry_fields(
     args, name = event.decoded, event.event_name
     fields: dict[str, Any] = {
         "sequence": int(args.get("sequence", state["sequence"])),
-        "kind": _TIMELINE_KIND[name],
+        "kind": TIMELINE_KIND[name],
         "quote_amount_minor": None,
         "valid_until_ts": None,
         "offer_hash": None,

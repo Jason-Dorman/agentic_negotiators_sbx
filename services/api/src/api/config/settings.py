@@ -17,10 +17,10 @@ values, so a test builds one directly and nothing below the composition root rea
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Final
 
-from pydantic import AfterValidator, Field, ValidationError
+from pydantic import AfterValidator, Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from negotiation_protocol.key_refs import check_key_reference
@@ -110,8 +110,96 @@ class ChainSettings(BaseSettings):
         )
 
 
+#: The agent's own default bound on a setup approval's gas limit (ADR-042). The backend never asks
+#: for more, so a request it builds is never refused for its gas limit (ADR-065).
+DEFAULT_SETUP_GAS_LIMIT_MAX: Final = 100_000
+
+
+@dataclass(frozen=True, slots=True)
+class AgentEndpoint:
+    """How the backend reaches one agent instance, and the root reference that instance holds.
+
+    `root_key_ref` is sent at provisioning and stored in `wallets.key_ref` (ADR-039); it is a
+    reference, never a key. The shared secret is bytes because the MAC is computed over bytes, and
+    it never appears in a `repr`.
+    """
+
+    base_url: str
+    root_key_ref: str
+    shared_secret: bytes = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerPolicy:
+    """The run controller's timing, each a product owner's decision or a stated default."""
+
+    #: How often the indexer is polled, and the relay's stuck transactions looked at, while a run
+    #: is driven (build_plan stage 2.4).
+    poll_interval_s: float = 1.0
+    #: ADR-063: an RPC or agent outage that lasts this long is `RECOVERY_REQUIRED`.
+    outage_limit_s: float = 60.0
+    #: How long a run's lease lasts unless renewed. The driver renews it at a third of this.
+    lease_ttl_s: float = 30.0
+    #: ADR-046: a turn refused as `observation_inconsistent` is rebuilt and retried this often.
+    observation_retries: int = 5
+    #: ADR-065: the most gas the backend asks an agent to sign a setup approval for.
+    setup_gas_limit_max: int = DEFAULT_SETUP_GAS_LIMIT_MAX
+    #: How long a call to an agent other than a turn may take. A turn's limit comes from the run's
+    #: own `model_timeout_s` and repair attempts.
+    agent_timeout_s: float = 10.0
+
+
+class ControllerSettings(BaseSettings):
+    """The controller's configuration: the two agents, and its timing. In `infra/.env.example`."""
+
+    model_config = SettingsConfigDict(extra="ignore", frozen=True)
+
+    agent_a_url: Annotated[str, Field(min_length=1)]
+    agent_b_url: Annotated[str, Field(min_length=1)]
+    agent_a_shared_secret: Annotated[SecretStr, Field(min_length=32)]
+    agent_b_shared_secret: Annotated[SecretStr, Field(min_length=32)]
+    buyer_root_key_ref: Annotated[str, AfterValidator(check_key_reference)]
+    seller_root_key_ref: Annotated[str, AfterValidator(check_key_reference)]
+    rpc_outage_limit_s: Annotated[float, Field(gt=0)] = 60.0
+    run_lease_ttl_s: Annotated[float, Field(gt=0)] = 30.0
+    agent_timeout_s: Annotated[float, Field(gt=0)] = 10.0
+    agent_setup_gas_limit_max: Annotated[int, Field(ge=21_000)] = DEFAULT_SETUP_GAS_LIMIT_MAX
+    software_version: Annotated[str, Field(min_length=1)] = "0.1.0"
+
+    def endpoints(self) -> dict[str, AgentEndpoint]:
+        """Agent A is the buyer's instance and agent B the seller's (`infra/.env.example`)."""
+        return {
+            "buyer": AgentEndpoint(
+                self.agent_a_url,
+                self.buyer_root_key_ref,
+                self.agent_a_shared_secret.get_secret_value().encode("utf-8"),
+            ),
+            "seller": AgentEndpoint(
+                self.agent_b_url,
+                self.seller_root_key_ref,
+                self.agent_b_shared_secret.get_secret_value().encode("utf-8"),
+            ),
+        }
+
+    def policy(self, chain: ChainSettings) -> ControllerPolicy:
+        return ControllerPolicy(
+            poll_interval_s=chain.indexer_poll_interval_s,
+            outage_limit_s=self.rpc_outage_limit_s,
+            lease_ttl_s=self.run_lease_ttl_s,
+            setup_gas_limit_max=self.agent_setup_gas_limit_max,
+            agent_timeout_s=self.agent_timeout_s,
+        )
+
+
 class SettingsError(Exception):
     """The environment does not configure the backend. The message quotes no value."""
+
+
+def _problems(error: ValidationError) -> str:
+    return "\n  ".join(
+        f"{'_'.join(str(part) for part in item['loc']).upper()}: {item['msg']}"
+        for item in error.errors(include_input=False, include_url=False, include_context=False)
+    )
 
 
 def load_chain_settings() -> ChainSettings:
@@ -123,8 +211,13 @@ def load_chain_settings() -> ChainSettings:
     try:
         return ChainSettings()  # type: ignore[call-arg]  # reason: every field comes from the environment
     except ValidationError as error:
-        problems = [
-            f"{'_'.join(str(part) for part in item['loc']).upper()}: {item['msg']}"
-            for item in error.errors(include_input=False, include_url=False, include_context=False)
-        ]
-        raise SettingsError("invalid chain configuration:\n  " + "\n  ".join(problems)) from None
+        raise SettingsError("invalid chain configuration:\n  " + _problems(error)) from None
+
+
+def load_controller_settings() -> ControllerSettings:
+    """As `load_chain_settings`: a shared secret pasted short, or a key in place of a root's
+    reference, is named by variable and rule and never repeated."""
+    try:
+        return ControllerSettings()  # type: ignore[call-arg]  # reason: every field comes from the environment
+    except ValidationError as error:
+        raise SettingsError("invalid controller configuration:\n  " + _problems(error)) from None

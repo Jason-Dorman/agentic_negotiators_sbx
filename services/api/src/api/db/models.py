@@ -293,6 +293,11 @@ class Run(Base):
         ),
         CheckConstraint(RUN_OUTCOME_REASON_MATCHES_KIND, name="outcome_reason_matches_kind"),
         CheckConstraint(RUN_OUTCOME_ACTOR_MATCHES_KIND, name="outcome_actor_matches_kind"),
+        CheckConstraint(
+            "termination_code IS NULL "
+            "OR (termination_cause IS NOT NULL AND termination_code BETWEEN 1 AND 4)",
+            name="termination_code_valid",
+        ),
         *_non_negative("session_expires_at_ts"),
         Index(None, "state"),
         Index(None, "batch_id"),
@@ -338,6 +343,8 @@ class Run(Base):
     session_expires_at_ts: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMP, nullable=True)
     terminal_at: Mapped[datetime | None] = mapped_column(TIMESTAMP, nullable=True)
+    termination_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
+    termination_code: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

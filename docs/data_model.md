@@ -4,7 +4,7 @@
 |---|---|
 | **Version** | 0.1.0 |
 | **Date** | 25 September 2026 |
-| **Status** | Built in stage 2.1; migration 0002 added two `tx_outbox` columns in stage 2.3. The Alembic migrations in `services/api/src/api/db/migrations/` are authoritative, and this document is checked against them by `test_db_schema_matches_data_model.py` |
+| **Status** | Built in stage 2.1; migration 0002 added two `tx_outbox` columns in stage 2.3, and migration 0003 two `runs` columns in stage 2.4. The Alembic migrations in `services/api/src/api/db/migrations/` are authoritative, and this document is checked against them by `test_db_schema_matches_data_model.py` |
 | **Source** | Spec sections 9.1, 9.3, 11.3 |
 | **Related** | [protocol.md](protocol.md), [api_contract.md](api_contract.md), [architecture.md](architecture.md), [security_and_trust_boundaries.md](security_and_trust_boundaries.md) |
 
@@ -147,11 +147,14 @@ are committed.
 | `config_hash` | `TEXT NULL` | |
 | `session_expires_at_ts` | `BIGINT NULL` | `CHECK >= 0` |
 | `started_at`, `terminal_at` | `TIMESTAMPTZ NULL` | |
+| `termination_cause` | `TEXT NULL` | why the run's session is being ended early — `model_failure`, `budget_exhausted`, `execution_failure`, `abort_requested`, `session_refused`, `session_deadline` — written in the same unit of work as whatever decided it, before anything is sent, and never overwritten: the first recorded is kept ([ADR-068](decision_log.md)). Migration 0003 |
+| `termination_code` | `SMALLINT NULL` | the abort reason code it is sent with (protocol 10), null for an expiry. `CHECK` (`ck_runs_termination_code_valid`): null, or 1 to 4 with a cause. Migration 0003 |
 
 Indexes: `(state)`, `(batch_id)`, `(created_at DESC)`.
 
 Three check constraints make section 5 a property of the table rather than of the code that writes
-it:
+it, and a fourth, `ck_runs_termination_code_valid`, keeps a termination code from being recorded
+without its cause:
 
 | Constraint | Rule |
 |---|---|
@@ -201,7 +204,7 @@ the address and how it was derived, and never a key of either kind.
 | `initial_base_minor`, `initial_quote_minor` | `NUMERIC(78,0) NOT NULL` | |
 | `allowance_minor` | `NUMERIC(78,0) NOT NULL` | |
 | `setup_nonce_next` | `BIGINT NOT NULL DEFAULT 0` | participant setup transaction nonce tracking; a freshly derived wallet starts at 0 |
-| `funded_tx_hashes` | `JSONB NOT NULL DEFAULT '{}'` | mint, fund and approve tx hashes, by label |
+| `funded_tx_hashes` | `JSONB NOT NULL DEFAULT '{}'` | mint, fund and approve tx hashes, by label: `mint_base`, `mint_quote`, `fund_eth` (`fund_eth_2`, … for a top-up after a restart, [ADR-065](decision_log.md)), `approve`. Written after the transaction is persisted, for display; setup itself finds what it sent in `tx_outbox`, so a crash between the two never sends twice |
 
 Unique: `(run_id, party)`, `(address)`.
 
@@ -243,7 +246,7 @@ take one and no two callers can take the same one.
 | `observation_hash` | `TEXT NOT NULL` | `0x` + sha256 of canonical JSON |
 | `started_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
 | `finished_at` | `TIMESTAMPTZ NULL` | |
-| `failure_code`, `failure_detail` | `TEXT NULL` | |
+| `failure_code`, `failure_detail` | `TEXT NULL` | why a turn ended other than confirmed (stage 2.4): the agent's `failure.code` for a model failure (`repair_exhausted`, …); `reverted`, with the decoded error as the detail, for an execution failure; `observation_inconsistent`, with the fields the agent named, for a refused observation — the next try is a new turn with a fresh observation (ADR-046); `observation_stale` for a stored observation not asked again after its offer or session expired ([ADR-071](decision_log.md)); `termination_requested` for a decision that arrived after a termination was recorded, kept only as a private decision record ([ADR-070](decision_log.md)); `session_deadline_passed`; `session_ended` for a turn the session's end overtook; or the code of an agent refusal that sent the run to `RECOVERY_REQUIRED` (ADR-064) |
 
 Unique: `(run_id, turn)`.
 
@@ -365,7 +368,13 @@ settlement block and `pre_settlement` at the block before it, so the difference 
 exactly the settlement's effect. A reorg invalidates every snapshot in a block the chain no longer
 has; one at a block the reorg did not reach stays canonical, and one whose block comes back is made
 canonical again ([ADR-055](decision_log.md)). `pre_setup` and `post_setup` are the
-controller's, in stage 2.4.
+controller's (stage 2.4), taken through the indexer's own `snapshot` so every snapshot is read the
+same way: `pre_setup` at the head before the first setup transaction, `post_setup` at the block that
+emitted `SessionOpened`, once that event is confirmed and both agents have approved the session
+([ADR-069](decision_log.md)) — every setup transaction is confirmed before `createSession` is sent,
+so that block's balances include them all. A `post_setup` snapshot is what marks a run's setup done, and
+it is the `my_balances` of every observation (protocol 12): nothing before the terminal event moves
+a participant's tokens.
 
 ### 3.13 `run_metrics`
 
@@ -399,7 +408,7 @@ provider reports a per-request cost, and a null estimate is displayed as unknown
 
 ### 3.14 `run_events`
 
-The SSE log. Append-only: a trigger refuses `UPDATE` and `DELETE`. The controller appends most of it (stage 2.4); the indexer appends `chain.reorg` itself, in the same transaction as the rewind it describes, so a reorg is never lost with a process ([ADR-058](decision_log.md)).
+The SSE log. Append-only: a trigger refuses `UPDATE` and `DELETE`. The controller appends most of it (stage 2.4): `run.state` in the same unit of work as every state or cause change; `turn.started`, `turn.decision` and `turn.signed` as a turn goes; `tx.status` as the relay sends and as each poll reports a status; `chain.event` for each newly indexed timeline entry, an execution failure included; `balances` per snapshot stage; `notice` on pause. The indexer appends `chain.reorg` itself, in the same transaction as the rewind it describes, so a reorg is never lost with a process ([ADR-058](decision_log.md)); the controller has acted on one when a `run.state` event with cause `reorg` follows it, which is how a restarted controller knows which it has not.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -486,7 +495,10 @@ Reason codes are stored as `SMALLINT` and rendered to strings via the tables in 
 | `SessionExpired` | `expired` | `anyone` | null |
 | `SessionAborted` | `aborted` | `operator` | 1..4 |
 
-A run in `recovery_required` or `failed_setup` keeps `outcome_kind = pending`. Model failure is recorded as `aborted` with reason 2 once the abort is canonical, and `run_metrics.failure_class = 'model'` distinguishes it from an operator request. An execution failure followed by abort is `aborted` with reason 4 and `failure_class = 'execution'`.
+A run in `recovery_required` keeps `outcome_kind = pending`. A run in `failed_setup` keeps it too
+unless a session had opened: one aborted or ended before setup finished records its outcome —
+`aborted` with reason 4 for a session an agent refused ([ADR-066](decision_log.md)), with reason 1
+for the operator's abort ([ADR-067](decision_log.md)). Model failure is recorded as `aborted` with reason 2 once the abort is canonical, and `run_metrics.failure_class = 'model'` distinguishes it from an operator request. An execution failure followed by abort is `aborted` with reason 4 and `failure_class = 'execution'`.
 
 ## 6. Invariants checked by tests
 

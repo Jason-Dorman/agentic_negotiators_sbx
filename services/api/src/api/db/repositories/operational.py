@@ -72,6 +72,15 @@ class SqlRunEventRepository(SqlRepository, RunEventRepository):
         )
         return [RunEventRecord.from_row(row) for row in rows]
 
+    async def latest(self, run_id: uuid.UUID, event_type: str) -> RunEventRecord | None:
+        row = await self._one_or_none(
+            select(RunEvent)
+            .where(RunEvent.run_id == run_id, RunEvent.event_type == event_type)
+            .order_by(RunEvent.cursor.desc())
+            .limit(1)
+        )
+        return None if row is None else RunEventRecord.from_row(row)
+
 
 class SqlOperationRepository(SqlRepository, OperationRepository):
     async def create(self, new: NewOperation) -> OperationRecord:

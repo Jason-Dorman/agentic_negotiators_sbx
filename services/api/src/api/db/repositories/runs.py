@@ -42,9 +42,15 @@ class SqlRunRepository(SqlRepository, RunRepository):
         return None if row is None else RunRecord.from_row(row)
 
     async def with_open_sessions(self) -> list[RunRecord]:
+        """Runs the indexer watches: a session id, and not finished. A `failed_setup` run is
+        finished too — its session never opened, or was aborted and its outcome recorded (ADR-066)
+        — and watching it would repeat its terminal event on every poll for good."""
         rows = await self._all(
             select(Run)
-            .where(Run.session_id.is_not(None), Run.state != RunState.TERMINAL)
+            .where(
+                Run.session_id.is_not(None),
+                Run.state.not_in((RunState.TERMINAL, RunState.FAILED_SETUP)),
+            )
             .order_by(Run.created_at)
         )
         return [RunRecord.from_row(row) for row in rows]
@@ -97,6 +103,20 @@ class SqlRunRepository(SqlRepository, RunRepository):
             state=state,
             state_cause=cause,
         )
+
+    async def request_termination(
+        self, run_id: uuid.UUID, cause: str, code: int | None
+    ) -> RunRecord:
+        statement = (
+            update(Run)
+            .where(Run.id == run_id, Run.termination_cause.is_(None))
+            .values(termination_cause=cause, termination_code=code)
+            .returning(Run)
+        )
+        row = await self._write_scalar(statement)
+        if row is not None:
+            return RunRecord.from_row(row)
+        return required(await self.get(run_id), f"run {run_id}")
 
     async def set_versions(
         self,

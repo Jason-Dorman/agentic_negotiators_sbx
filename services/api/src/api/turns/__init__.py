@@ -1,6 +1,27 @@
-"""The turn executor: one turn per spec section 9.2.
+"""The turn executor of spec section 9.2: observe, decide, persist before broadcast, broadcast,
+confirm — as steps the controller advances between indexer polls — and what the backend tells an
+agent about its session, including after the agent restarts (ADR-048).
 
-Arrives in stage 2.4 of docs/build_plan.md; see docs/architecture.md section 5.2. The package exists
-from stage 2.1 so that the import contract in `.importlinter` can name it and be enforced from the
-first backend code.
+Built in stage 2.4 of docs/build_plan.md; see docs/architecture.md sections 5.2 and 6.2.
 """
+
+from api.turns.agents import AgentSessions, SessionNotOpenedError
+from api.turns.executor import (
+    ActionRelay,
+    DecisionSentences,
+    TurnExecutor,
+    TurnStatus,
+    TurnStep,
+    tx_status_event,
+)
+
+__all__ = [
+    "ActionRelay",
+    "AgentSessions",
+    "DecisionSentences",
+    "SessionNotOpenedError",
+    "TurnExecutor",
+    "TurnStatus",
+    "TurnStep",
+    "tx_status_event",
+]

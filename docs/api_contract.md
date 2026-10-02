@@ -168,6 +168,8 @@ Request:
 
 Response `201`: the run resource (section 2.3) in state `draft`. Mandates are stored as `mandate_versions` and are absent from the response.
 
+Both agents are provisioned before the response, inside the run's own unit of work (stage 2.4, [ADR-039](decision_log.md)): each derives the run's wallet and reports its address. If either does not answer, the response is `503 dependency_unavailable`; if either refuses — a policy it cannot run, say — `422 validation_error` with the agent's `agent_code`. Either way nothing of the run is kept, and an agent that did provision it is told to release it. The request body is parsed by `api.controller.RunRequest`; every amount through `MinorAmount`, so one with a trailing newline is refused, and no refusal repeats a value.
+
 Validation errors (`422 validation_error`) include: unknown scenario or deployment, `max_offers` outside 1..32, non-integer amount strings, `model_id` missing for a model policy, `first_proposer` other than `buyer`.
 
 #### `GET /v1/runs`
@@ -221,7 +223,7 @@ Public configuration, timeline summary, and status. Never includes mandates, pri
 }
 ```
 
-`state` values: `draft`, `validated`, `preparing`, `running`, `paused`, `recovery_required`, `terminal`, `failed_setup`. `state_cause` is a short string such as `reorg`, `rpc_timeout`, `operator_pause`, `step_complete`.
+`state` values: `draft`, `validated`, `preparing`, `running`, `paused`, `recovery_required`, `terminal`, `failed_setup`. `state_cause` is a short string. Since stage 2.4: `start` or `step` on `preparing`, the mode setup was started in; `step` while a requested step is under way and `step_complete` after it; `session_open` for a run whose setup was carried on and which waits to be resumed; `operator_pause`; `reorg`; `recovered`; `validation_failed`; when a run ends after its session was ended early, the termination's cause — `abort_requested`, `model_failure`, `budget_exhausted`, `execution_failure`, `session_deadline` or `session_refused` ([ADR-066](decision_log.md), [ADR-068](decision_log.md)) — whatever fault crossed it; on `failed_setup`, also `<kind>_reverted` for a setup transaction that reverted (`mint_reverted`, `fund_eth_reverted`, `approve_reverted`, `create_session_reverted`); and on `recovery_required`, the fault — `rpc_timeout`, `agent_unavailable`, `observation_inconsistent`, `nonce_conflict`, `unreachable`, `refused`, `settlement_check_failed`, `termination_reverted`, `internal_error`, an indexer problem's code, `agent_<code>` for an agent refusal, or `observation_<code>` for an observation the backend could not build ([ADR-063](decision_log.md), [ADR-064](decision_log.md)). [runbook.md](runbook.md) section 6 says what each asks of an operator.
 
 #### `POST /v1/runs/{run_id}/validate`
 
@@ -231,17 +233,25 @@ Runs the setup validation in spec 3.1. Synchronous, may take a few seconds. Resp
 {
   "ok": false,
   "checks": [
+    { "check": "deployment", "ok": true, "detail": "local-2026-09-19-01" },
+    { "check": "confirmation_threshold", "ok": true, "detail": "1" },
+    { "check": "rpc", "ok": true, "detail": "latest block 41" },
     { "check": "chain_id", "ok": true, "detail": "31337" },
     { "check": "exchange_code_hash", "ok": true },
-    { "check": "buyer_quote_balance", "ok": false, "detail": "expected 250000000, wallet unfunded; will fund on start" },
-    { "check": "relay_eth_balance", "ok": true },
-    { "check": "agent_a_model_available", "ok": true, "detail": "claude-opus-5" },
-    { "check": "rpc", "ok": true, "detail": "latest block 41" }
+    { "check": "base_token_code_hash", "ok": true },
+    { "check": "quote_token_code_hash", "ok": true },
+    { "check": "relay_eth_balance", "ok": true, "detail": "10000000000000000000000 wei" },
+    { "check": "operator_eth_balance", "ok": true, "detail": "9999990000000000000000 wei" },
+    { "check": "buyer_agent", "ok": false, "detail": "its signer did not load" },
+    { "check": "buyer_agent_model_available", "ok": true },
+    { "check": "buyer_wallet", "ok": true, "detail": "0x…" },
+    { "check": "seller_agent", "ok": true, "detail": "agent-b" },
+    { "check": "seller_wallet", "ok": true, "detail": "0x…" }
   ]
 }
 ```
 
-Never reports feasibility. Never includes a mandate value. On success the run moves to `validated`.
+Every check is reported, passing or not (stage 2.4, `api.validation`). The chain ID must be the manifest's and one of 31337 and 11155111; each contract's runtime bytecode must hash to the manifest's `code_hashes`; a `confirmation_threshold` that is not an integer of at least 1 is refused ([ADR-059](decision_log.md)); each agent must answer as its role with its signer loaded and the run's policy among its `policy_kinds`, and with `model_ok` for a model policy. The participant wallets are fresh and hold nothing until start funds them, which is not a failure. Never reports feasibility. Never includes a mandate value. On success the run moves to `validated`; a `validated` run whose validation no longer passes goes back to `draft`, cause `validation_failed`.
 
 #### `POST /v1/runs/{run_id}/start`
 
@@ -267,7 +277,9 @@ Request:
 { "reason": "operator_request" }
 ```
 
-Stops decisions and requests on-chain abort if the session is open and before its deadline. If the deadline has elapsed, submits `expireSession` instead and the outcome is `expired`. `202` with operation `abort_run`. Abort cannot reverse a settlement that lands first; the operation result reports which won.
+Stops decisions and requests on-chain abort if the session is open and before its deadline. If the deadline has elapsed, submits `expireSession` instead and the outcome is `expired`. `202` with operation `abort_run`. Allowed from `preparing`, `running`, `paused` and `recovery_required`, so it is always the way out of a run that cannot go on (stage 2.4, [ADR-067](decision_log.md)). The termination is recorded on the run before anything is sent ([ADR-068](decision_log.md)): a second abort sends nothing more, and the first termination recorded — a model failure's, say — is the one kept. A run with no session — none recorded, or its `createSession` reverted — is `failed_setup` at once, cause `abort_requested`, and the active run is freed; one whose session is still being created is aborted once it opens. Otherwise the run keeps its state until the termination is canonical at the threshold, and ends `terminal`, or `failed_setup` when setup had not finished. Abort cannot reverse a settlement that lands first; the operation result reports which won. `reason` is one of the four abort codes' names (protocol section 10); any other is `422`.
+
+While a termination is recorded and the run has not ended, `start`, `step` and `resume` are `409 invalid_state` with `details.termination` naming it, and a decision an agent returns meanwhile is kept only as a private decision record — nothing of it is signed into the run or sent ([ADR-070](decision_log.md)).
 
 #### `POST /v1/runs/{run_id}/clone`
 
@@ -372,12 +384,12 @@ Each event: `id: <cursor>` (monotonic integer per run), `event: <type>`, `data: 
 |---|---|---|
 | `run.state` | `{ state, state_cause, outcome }` | any state or outcome change |
 | `turn.started` | `{ turn, party, expected_sequence }` | observation sent |
-| `turn.decision` | `{ turn, party, attempt, status: "valid" \| "invalid" \| "model_failed", action, sentence }` | after validation; no private feedback, no raw response |
+| `turn.decision` | `{ turn, party, attempt, status: "valid" \| "invalid" \| "model_failed", action, sentence }` | after validation; no private feedback, no raw response. `action` and `sentence` are the signed attempt's — its decision, and the sentence its event will have — and null for a refused one, which was never an offer (FR-U8) |
 | `turn.signed` | `{ turn, party, kind, digest }` | signed action persisted |
 | `tx.status` | `{ digest, tx_hash, status, block_number, confirmations, explorer_url }` | each status transition |
-| `chain.event` | timeline entry (section 2.2) | canonical event indexed |
+| `chain.event` | timeline entry (section 2.2) | canonical event indexed, or an execution failure recorded |
 | `chain.reorg` | `{ from_block, to_block, invalidated_digests: [] }` | reorg detected; appended by the indexer in the same transaction as the rewind ([ADR-058](decision_log.md)) |
-| `balances` | `{ stage, buyer: {…}, seller: {…}, block_number }` | snapshot taken |
+| `balances` | `{ stage, buyer: { base_minor, quote_minor, eth_wei }, seller: {…}, block_number }` | snapshot taken: `pre_setup` and `post_setup` during setup, the terminal stages when the outcome is recorded |
 | `metrics` | run metrics object | after each turn |
 | `operation` | operation record | operation status change |
 | `notice` | `{ level, message }` | operator-facing notices such as "Paused; offer and session expiry continue." |

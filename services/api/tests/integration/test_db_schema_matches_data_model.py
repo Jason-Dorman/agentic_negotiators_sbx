@@ -159,6 +159,8 @@ TABLES: dict[str, dict[str, str]] = {
         "session_expires_at_ts": f"BIGINT {N}",
         "started_at": f"{TS} {N}",
         "terminal_at": f"{TS} {N}",
+        "termination_cause": f"TEXT {N}",
+        "termination_code": f"SMALLINT {N}",
         **COMMON,
     },
     "mandate_versions": {
@@ -423,6 +425,7 @@ CHECKS: dict[str, set[str]] = {
         "ck_runs_outcome_requires_terminal_event",
         "ck_runs_outcome_reason_matches_kind",
         "ck_runs_outcome_actor_matches_kind",
+        "ck_runs_termination_code_valid",
     }
     | _non_negative("runs", "session_expires_at_ts"),
     "mandate_versions": {
