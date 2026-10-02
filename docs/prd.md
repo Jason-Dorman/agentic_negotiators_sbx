@@ -70,6 +70,8 @@ Real money, production wallets, external asset prices, bridging, lending, guaran
 
 Deferred but explicitly wanted: **cross-vendor pairings**, negotiating one vendor's model against another's. v0.1 runs Claude against Claude. The interface admits a second provider as an adapter, but the comparison needs its own pairing matrix and an honest treatment of the prompt as a confound, so it is a follow-on experiment rather than a configuration flag ([ADR-027](decision_log.md)).
 
+Also deferred but explicitly wanted: **human settlement approval**. The agents stop at the agreed terms — the standing offer signed by its proposer, the acceptance signed by the counterparty — and submit them for the operator's review beside the run's cost metrics; settlement executes only on approval, and a rejection resumes the negotiation. The product owner chose the on-chain two-phase design, which records the acceptance on-chain pending approval and settles in a second operator-approved transaction. That is protocol version 2 and a new deployment, so it is built after v0.1 completes; until then FR-P5 stands and settlement is atomic on acceptance ([ADR-062](decision_log.md)).
+
 ### 4.3 Explicit non-goals
 
 - The sandbox is not a permissionless exchange. Operator power to create and abort sessions is centralized and disclosed.
@@ -186,7 +188,7 @@ See [protocol.md](protocol.md) for the normative definition.
 | FR-U2 | A negotiation timeline shows offer amount, actor, reference offer, sequence, transaction status, and explorer link. | 3.2 |
 | FR-U3 | A settlement panel shows current offer, expiry, both authorizations, and before/after balances. | 3.2 |
 | FR-U4 | An observer-only control reveals private mandates. The data must never enter the opposing agent's context and the request must carry explicit operator intent. | 3.2, 10.1 |
-| FR-U5 | A metric strip shows recorded offers, elapsed decision time, chain wait time, model cost (estimated and reported separately), and outcome. | 3.2, 8 |
+| FR-U5 | A metric strip shows recorded offers, elapsed decision time, chain wait time, and outcome, with the run's three cost groups: model cost (estimated and reported separately, with calls and token counts), chain cost (gas and test-ETH fee), and RPC cost (request count and estimated USD). RPC cost has no reported figure — providers bill off-channel — so the estimate is labelled an estimate, and unknown shows as unknown, never zero. | 3.2, 8, ADR-061 |
 | FR-U6 | Structured actions render as plain sentences, for example "Buyer offers 94 mUSD for 10 mASSET." | 3.2 |
 | FR-U7 | The UI must label all balances as test assets, all economics as simulated, whether decisions are live or replayed, whether a run used a deterministic fixture, and that the operator holds centralized abort power. | 3.1, 8, 12 |
 | FR-U8 | Invalid raw model responses must be labelled as private operational records that were never authorized offers. | 7.6 |
@@ -227,6 +229,7 @@ Reported per batch and per run. Definitions are normative in spec 11.2.
 - Buyer and seller reservation utility, captured surplus, and efficiency ratio (undefined when feasible surplus is zero).
 - Negotiation cost (calls, tokens, USD estimated and reported, decision time).
 - Chain cost (gas, test-ETH fee, inclusion and confirmation wait; setup shown separately).
+- RPC cost (request count by method, estimated USD from the operator-maintained RPC price table; no reported figure exists, [ADR-061](decision_log.md)).
 - Operational failure rate by cause.
 - Audit completeness: every authorized action and final balance reconciles with canonical chain evidence.
 

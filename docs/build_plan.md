@@ -599,7 +599,10 @@ cause `reorg` — and every transition in architecture 6.1 is exercised, illegal
 - The operator API of [api_contract.md](api_contract.md) section 2 with idempotency keys, operation
   records and the operator token. The batch routes arrive with the evaluator in stage 6.
 - SSE with `Last-Event-ID` replay from `run_events`.
-- `evidence`, the export document, and `metrics`, the per-run metrics of spec section 11.2.
+- `evidence`, the export document, and `metrics`, the per-run metrics of spec section 11.2 —
+  extended with the RPC request counts and estimated RPC cost of [ADR-061](decision_log.md): the
+  chain adapter's per-method counting, the RPC price table in `config`, and the migration adding
+  `rpc_requests`, `rpc_requests_by_method` and `rpc_cost_estimated_usd` to `run_metrics`.
 - The OpenAPI snapshot test of api_contract section 8.
 - Dockerfiles and the Compose services `api`, `agent-a` and `agent-b`.
 
@@ -618,7 +621,7 @@ cause `reorg` — and every transition in architecture 6.1 is exercised, illegal
 
 **Deliverables**
 - Setup screen with two isolated mandate editors, validation report, controls (Validate, Start, Step, Pause, Resume, Abort, Clone).
-- Live view: agent panels, timeline with explorer links, settlement panel with before/after balances, observer reveal control, metric strip, disclosures.
+- Live view: agent panels, timeline with explorer links, settlement panel with before/after balances, observer reveal control, metric strip with the three cost groups of FR-U5 — model, gas and fee, and estimated RPC cost ([ADR-061](decision_log.md)) — and disclosures.
 - Replay mode and export download.
 - Typed client generated from OpenAPI and protocol schemas.
 - Playwright E2E.
@@ -639,6 +642,10 @@ cause `reorg` — and every transition in architecture 6.1 is exercised, illegal
 
 ## Stage 6: Evaluation
 
+**Open:** whether this stage stays in scope is before the product owner as
+[Q41](open_questions.md); it remains in the plan until answered, and nothing before it depends on
+the answer.
+
 **Deliverables**
 - Batch evaluator CLI: population generation from seed, four pairings, repetitions, sequential execution, per-run exports, invariant checker, report with distributions and bootstrap intervals. The feasible interval takes each party's inventory floor into account as well as its reservation price — for the buyer, its quote balance less its floor caps what it can pay ([ADR-045](decision_log.md)).
 - Metrics per spec 11.2 in the API and the report.
@@ -649,6 +656,18 @@ cause `reorg` — and every transition in architecture 6.1 is exercised, illegal
 ## Release v0.1
 
 Checklist from [prd.md](prd.md) section 9. Tag `v0.1.0`. Freeze protocol version 1.
+
+## After v0.1: human settlement approval
+
+Decided by the product owner on 1 October 2026 and deferred until the current build finishes
+([ADR-062](decision_log.md)): the agents stop at the agreed terms and submit them for the
+operator's review beside the run's cost metrics; settlement executes only on approval, and a
+rejection resumes the negotiation. The chosen design is on-chain two-phase — acceptance recorded
+on-chain pending approval, transfers in a second operator-approved transaction — which is protocol
+version 2 and a new deployment. The feature's design questions (how a rejection reaches the agents'
+observations, what it does to the accepted offer, the pending state's expiry and balance rules, and
+whether approval is per-run configurable) get their own ADRs when its design begins; nothing in
+stages 2 to 6 anticipates it.
 
 ---
 
