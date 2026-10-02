@@ -391,6 +391,12 @@ One row per run, recomputed on every terminal transition and on demand.
 
 The counters carry non-negative checks.
 
+Stage 2.5 adds, by migration and to the table above when it lands ([ADR-061](decision_log.md)):
+`rpc_requests INTEGER NOT NULL DEFAULT 0` (`CHECK >= 0`), `rpc_requests_by_method JSONB NOT NULL
+DEFAULT '{}'`, and `rpc_cost_estimated_usd NUMERIC(12,6) NULL` — the chain adapter's request counts
+for the run, priced from the operator-maintained RPC price table. There is no reported column: no
+provider reports a per-request cost, and a null estimate is displayed as unknown, never zero.
+
 ### 3.14 `run_events`
 
 The SSE log. Append-only: a trigger refuses `UPDATE` and `DELETE`. The controller appends most of it (stage 2.4); the indexer appends `chain.reorg` itself, in the same transaction as the rewind it describes, so a reorg is never lost with a process ([ADR-058](decision_log.md)).

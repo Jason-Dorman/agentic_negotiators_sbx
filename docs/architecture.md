@@ -128,9 +128,9 @@ One FastAPI process with modules that could later be split. Module boundaries ar
 | `validation/` | Validate setup: manifest, bytecode, chain ID, funds, allowances, signer, RPC, model availability | web3 adapter, agent client |
 | `evidence/` | Replay and export | repositories |
 | `metrics/` | Per-run and per-batch metrics | repositories |
-| `chain/` | web3.py adapter, ABI loading, typed event decoding | packages/protocol |
+| `chain/` | web3.py adapter, ABI loading, typed event decoding, RPC request counting by method ([ADR-061](decision_log.md)) | packages/protocol |
 | `db/` | SQLAlchemy models, repositories, Alembic migrations | |
-| `config/` | Pydantic settings; secrets loaded from environment; price table | |
+| `config/` | Pydantic settings; secrets loaded from environment; price tables (model and RPC) | |
 
 The relay holds its own gas-paying key and can never produce a participant signature. The indexer never writes an economic outcome; it confirms and verifies the canonical terminal event, the projection derives the outcome from it, and the controller records it ([ADR-052](decision_log.md)). `relay`, `indexer` and `projection` are independent siblings under `.importlinter`, so the indexer declares the sentence renderer it needs as a protocol and the composition root hands it the projection's.
 
@@ -387,6 +387,8 @@ The model client lives only in the agent service and is wrapped behind `ModelCli
 
 `SEPOLIA_RPC_URL` points at an Alchemy application created for this project alone, not shared with the operator's other projects, so that rate-limit headroom and usage attribution belong to this project. The indexer polls every 4 s, which at one active run is well inside a free-tier compute-unit budget; the poll interval is configuration, and the runbook records what to change if the provider throttles.
 
+**RPC cost accounting ([ADR-061](decision_log.md)).** The chain adapter counts every JSON-RPC request it makes, by method, attributed to the run holding the lease; requests made outside any run, such as health checks, are logged but belong to no run's metrics. The metrics calculator prices the counts from an operator-maintained RPC price table beside the model price table, each with a `last_verified` date shown in the UI. No provider reports a per-request cost in its responses, so the figure is always an estimate and is labelled as one; the local chain's table entry is zero because Anvil really is free, and a provider with no table entry shows unknown, never zero.
+
 **Idempotency and concurrency.** One run active at a time enforced by a database advisory lock plus a `run_leases` row with expiry. Mutation routes take `Idempotency-Key` and store the response in `operations`. Relay nonces are serialized by the same lease.
 
 **Logging.** Structured JSON logs. Every line carries `run_id`, `turn_id`, and `component`. A redaction filter removes anything matching private-key, API-key, or mandate field patterns. Model request and response bodies are logged only to `decisions`, never to stdout.
@@ -428,4 +430,4 @@ Exact versions were chosen at the start of stage 0, are pinned in `uv.lock`, `pn
 | Agent service state loss on restart | Provisioning is idempotent and the key derivation reproduces the address; when a service reports a run `unprovisioned`, the controller re-provisions it from `mandate_versions` with the stored address, re-sends approve-session from the canonical `SessionOpened` event and its block's timestamp, and retries ([ADR-048](decision_log.md)) |
 | Clock skew between backend and chain | Always read `latest` block timestamp before computing `validUntil`; never use wall-clock for protocol time |
 | SSE clients miss events | Every event carries a monotonic cursor; reconnect with `Last-Event-ID` replays from `run_events` |
-| Model cost drift | Price table is operator-maintained config with a `last_verified` date shown in the UI |
+| Model or RPC cost drift | Price tables (model and RPC) are operator-maintained config with `last_verified` dates shown in the UI |

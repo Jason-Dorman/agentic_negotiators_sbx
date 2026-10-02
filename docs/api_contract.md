@@ -214,7 +214,8 @@ Public configuration, timeline summary, and status. Never includes mandates, pri
   "metrics": {
     "recorded_offers": 3, "decision_time_ms": 41234, "chain_wait_ms": 6100,
     "model_calls": 4, "model_cost_estimated_usd": "0.31", "model_cost_reported_usd": "0.28" | null,
-    "gas_used": 412000, "fee_wei": "…"
+    "gas_used": 412000, "fee_wei": "…",
+    "rpc_requests": 184, "rpc_cost_estimated_usd": "0.0001" | null
   },
   "labels": { "test_assets": true, "simulated_economics": true, "fixture": false, "operator_abort_power": true }
 }
@@ -329,7 +330,7 @@ Query: `include_private=true` requires `X-Observer-Reveal: true`. Returns the ev
 
 #### `GET /v1/runs/{run_id}/metrics`
 
-Per-run metrics per spec 11.2. Reservation utilities require private inputs and are included only with `X-Observer-Reveal: true`; otherwise those fields are `null`.
+Per-run metrics per spec 11.2, plus the RPC request count by method and estimated RPC cost of [ADR-061](decision_log.md). Reservation utilities require private inputs and are included only with `X-Observer-Reveal: true`; otherwise those fields are `null`. `rpc_cost_estimated_usd` is `null` — displayed as unknown, never zero — when the RPC price table has no entry for the deployment's provider.
 
 ### 2.3 Batches (local profile only)
 
