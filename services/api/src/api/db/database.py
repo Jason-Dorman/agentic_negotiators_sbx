@@ -63,7 +63,11 @@ class SqlUnitOfWork(UnitOfWork):
 
 class Database:
     def __init__(self, url: str, *, pool_size: int = 5, echo: bool = False) -> None:
-        self._engine = create_async_engine(url, pool_size=pool_size, pool_pre_ping=True, echo=echo)
+        # `hide_parameters`: a database error's text would otherwise carry the row it refused —
+        # a mandate, a raw response — into whatever logs or re-raises it (stage 2.5 review).
+        self._engine = create_async_engine(
+            url, pool_size=pool_size, pool_pre_ping=True, echo=echo, hide_parameters=True
+        )
         # Records are built before the session closes, so nothing needs its attributes after
         # commit; `expire_on_commit=False` just stops SQLAlchemy doing work that would be discarded.
         self._sessions = async_sessionmaker(self._engine, expire_on_commit=False, autoflush=False)

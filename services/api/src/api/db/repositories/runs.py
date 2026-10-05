@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from api.db.enums import Party, RunState
+from api.db.enums import OutcomeKind, Party, RunState
 from api.db.errors import LeaseLostError
 from api.db.models import ActiveRun, MandateVersion, Run, RunLease, Wallet
 from api.db.protocols import LeaseRepository, MandateRepository, RunRepository, WalletRepository
@@ -41,7 +41,33 @@ class SqlRunRepository(SqlRepository, RunRepository):
         row = await self._one_or_none(select(Run).where(Run.id == run_id).with_for_update())
         return None if row is None else RunRecord.from_row(row)
 
-    async def with_open_sessions(self) -> list[RunRecord]:
+    async def list_page(
+        self,
+        *,
+        limit: int,
+        state: RunState | None = None,
+        outcome: OutcomeKind | None = None,
+        batch_id: uuid.UUID | None = None,
+        before: tuple[datetime, uuid.UUID] | None = None,
+    ) -> list[RunRecord]:
+        statement = select(Run)
+        if state is not None:
+            statement = statement.where(Run.state == state)
+        if outcome is not None:
+            statement = statement.where(Run.outcome_kind == outcome)
+        if batch_id is not None:
+            statement = statement.where(Run.batch_id == batch_id)
+        if before is not None:
+            created_at, run_id = before
+            statement = statement.where(
+                (Run.created_at < created_at) | ((Run.created_at == created_at) & (Run.id < run_id))
+            )
+        rows = await self._all(
+            statement.order_by(Run.created_at.desc(), Run.id.desc()).limit(limit)
+        )
+        return [RunRecord.from_row(row) for row in rows]
+
+    async def with_open_sessions(self, deployment_id: str) -> list[RunRecord]:
         """Runs the indexer watches: a session id, and not finished. A `failed_setup` run is
         finished too — its session never opened, or was aborted and its outcome recorded (ADR-066)
         — and watching it would repeat its terminal event on every poll for good."""
@@ -50,6 +76,8 @@ class SqlRunRepository(SqlRepository, RunRepository):
             .where(
                 Run.session_id.is_not(None),
                 Run.state.not_in((RunState.TERMINAL, RunState.FAILED_SETUP)),
+                # ADR-081: runs on another chain are not this backend's to watch.
+                Run.deployment_id == deployment_id,
             )
             .order_by(Run.created_at)
         )

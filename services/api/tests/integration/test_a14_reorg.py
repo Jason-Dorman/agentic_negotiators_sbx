@@ -32,6 +32,7 @@ from api.db import (
     TxStatus,
 )
 from api.observation import ObservationBuilder, ObservationError
+from negotiation_protocol import validate
 
 
 async def test_a_reorg_pauses_the_run_and_reconcile_resends(
@@ -147,6 +148,18 @@ async def test_a_reorg_pauses_the_run_and_reconcile_resends(
 
         run = await harness.tick_until(run.id, finished)
         assert (run.state, run.outcome_kind) == (RunState.TERMINAL, OutcomeKind.SETTLED)
+
+        # The export is the archive of record: it keeps the offer the reorg removed, marked
+        # non-canonical beside the one that replaced it, and still validates (stage 2.5).
+        export = await harness.backend.exporter.export(run.id)
+        validate(export, "export.v1.json")
+        offers = [e for e in export["chain_events"] if e["event"] == "OfferRecorded"]
+        removed_offer = [e for e in offers if not e["canonical"]]
+        assert removed_offer, "the invalidated event is in the export"
+        assert any(
+            e["canonical"] and e["decoded"]["offerHash"] == removed_offer[0]["decoded"]["offerHash"]
+            for e in offers
+        ), "beside the same offer on the new fork"
     finally:
         await harness.aclose()
 

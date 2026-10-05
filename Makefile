@@ -25,7 +25,7 @@ endif
 # The Python coverage report the gate reads. Outside the tree, like the contract coverage report.
 PYTHON_COVERAGE_JSON := /tmp/negotiation-python-coverage.json
 
-.PHONY: help setup lint format test gates ci up down logs reset-db hooks abi fixtures artefacts snapshot snapshot-check coverage-contracts coverage-python migrate
+.PHONY: help setup lint format test gates ci up down logs reset-db hooks abi fixtures artefacts snapshot snapshot-check coverage-contracts coverage-python migrate stack openapi
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -129,8 +129,14 @@ ci: lint test gates ## What CI runs; needs `make up`
 migrate: ## Apply the database migrations to DATABASE_URL (docs/runbook.md section 2)
 	uv run python -m api.db.migrate upgrade
 
-up: ## Start PostgreSQL and Anvil (local profile)
-	docker compose --profile local up -d --wait
+up: ## Start PostgreSQL and Anvil (local profile): what the test suites need
+	docker compose --profile local up -d --wait postgres anvil
+
+stack: ## Start the whole local profile, the api and both agents included, from infra/.env
+	docker compose --env-file infra/.env --profile local up -d --build --wait
+
+openapi: ## Rewrite the OpenAPI snapshot after an intended API change (api_contract section 8)
+	UPDATE_OPENAPI_SNAPSHOT=1 uv run pytest -q services/api/tests/contract
 
 down: ## Stop the local profile, keeping data
 	docker compose --profile local down

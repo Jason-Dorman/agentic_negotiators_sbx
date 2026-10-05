@@ -14,8 +14,8 @@ switched on after the fact.
 |---|---|---|
 | `db/` | 2.1 | Models, the initial migration, repositories behind protocols, the unit of work |
 | `chain/`, `relay/`, `indexer/`, `projection/`, `config/` | 2.3 | The web3 adapter and codec, the durable outbox, the indexer, the projection, the chain settings |
-| `observation/`, `agent_client/`, `validation/`, `turns/`, `controller/` | 2.4 | Packages only |
-| `evidence/`, `metrics/`, `routes/` | 2.5 | Packages only |
+| `observation/`, `agent_client/`, `validation/`, `turns/`, `controller/` | 2.4 | The observation builder, the agent client, the setup validator, the turn executor, the run controller; `composition.py` |
+| `evidence/`, `metrics/`, `routes/` | 2.5 | The run resource and the export, the per-run metrics with RPC cost, the operator API and its event stream; `main.py`, `python -m api` |
 
 ## Persistence (`db/`)
 
@@ -81,6 +81,26 @@ await relay.replace_stuck(run_id)  # ADR-050
 Upper layers import `api.db.records`, `api.db.enums`, `api.db.errors` and `api.db.protocols`
 directly, never the `api.db` package: its `__init__` imports `Database` and therefore SQLAlchemy,
 which `sessions-stay-in-db` forbids outside `db/`, transitively. Tests may import `api.db`.
+
+## The process and the operator API (`routes/`, `evidence/`, `metrics/`)
+
+`python -m api` serves [api_contract.md](../../docs/api_contract.md) section 2 from the
+environment's configuration (`infra/.env.example`); `api.main` is what it serves, and its lifespan
+migrates when `AUTO_MIGRATE` is set, loads `DEPLOYMENT_MANIFEST` and `SCENARIOS_DIR`, builds the
+graph once through `api.composition`, and starts `RunController.recover` in the background. In the
+local Compose profile the image `services/api/Dockerfile` builds is the `api` service
+([runbook.md](../../docs/runbook.md) section 8).
+
+```python
+backend = build_controller(
+    database, deployment, chain_settings, controller_settings, environ=os.environ
+)
+services = build_services(backend, database, api_settings, software_version="0.1.0")
+app = create_app(api_settings, services)  # what the integration suite serves through ASGITransport
+```
+
+`tests/support/api_http.py` `ApiHarness` is the reference: the same three calls over the stage 2.4
+controller harness, and `serve` for a real uvicorn server where a test must read the event stream.
 
 ## Tests
 

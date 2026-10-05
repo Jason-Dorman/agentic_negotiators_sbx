@@ -25,6 +25,12 @@ AGENT_ROOT_KEY_REF=env:BUYER_ROOT_KEY BUYER_ROOT_KEY=0x… AGENT_SHARED_SECRET=�
 The variables, what a failed key load looks like and how to check one are in
 [runbook.md](../../docs/runbook.md) section 3.
 
+In the local Compose profile (stage 2.5) the image `services/agent/Dockerfile` builds runs as both
+`agent-a` and `agent-b`, each given only its own root and shared secret. Its health check is
+`python -m agent.healthcheck`, which signs `GET /internal/health` with the instance's own secret —
+the route requires the HMAC like every other — and passes only when the instance answers with its
+signer loaded ([runbook.md](../../docs/runbook.md) section 8).
+
 ## What is where
 
 | Path | What |

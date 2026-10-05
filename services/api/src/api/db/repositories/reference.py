@@ -72,6 +72,7 @@ class SqlDeploymentRepository(SqlRepository, DeploymentRepository):
         "manifest",
         "start_block",
         "deployed_at",
+        "genesis_hash",
     )
 
     async def upsert(self, deployment: DeploymentRecord) -> None:

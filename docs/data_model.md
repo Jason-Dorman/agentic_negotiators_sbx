@@ -4,7 +4,7 @@
 |---|---|
 | **Version** | 0.1.0 |
 | **Date** | 25 September 2026 |
-| **Status** | Built in stage 2.1; migration 0002 added two `tx_outbox` columns in stage 2.3, and migration 0003 two `runs` columns in stage 2.4. The Alembic migrations in `services/api/src/api/db/migrations/` are authoritative, and this document is checked against them by `test_db_schema_matches_data_model.py` |
+| **Status** | Built in stage 2.1; migration 0002 added two `tx_outbox` columns in stage 2.3, migration 0003 two `runs` columns in stage 2.4, and migration 0004 three `run_metrics` columns and `deployments.genesis_hash` in stage 2.5. The Alembic migrations in `services/api/src/api/db/migrations/` are authoritative, and this document is checked against them by `test_db_schema_matches_data_model.py` |
 | **Source** | Spec sections 9.1, 9.3, 11.3 |
 | **Related** | [protocol.md](protocol.md), [api_contract.md](api_contract.md), [architecture.md](architecture.md), [security_and_trust_boundaries.md](security_and_trust_boundaries.md) |
 
@@ -94,8 +94,9 @@ One row per deployment manifest.
 | `manifest` | `JSONB NOT NULL` | full manifest as written by the deploy script |
 | `start_block` | `BIGINT NOT NULL` | earliest block that can hold an event from this deployment; the indexer and the reconstruction tool scan from here. `CHECK >= 0` |
 | `deployed_at` | `TIMESTAMPTZ NOT NULL` | rendered from the manifest's `deployed_at_ts` |
+| `genesis_hash` | `TEXT NULL` | block 0's hash on the chain the deployment was loaded against, checked at every start-up; it is what tells a restarted Anvil — same chain ID, same addresses — from the chain it replaced ([ADR-081](decision_log.md)). Null for a row loaded before migration 0004: its chain is unknown. Migration 0004 |
 
-Unique: `(chain_id, exchange_address)`.
+Unique: `(chain_id, genesis_hash, exchange_address)` since migration 0004 (it was `(chain_id, exchange_address)`). A run belongs to its deployment, and everything the relay and the indexer read across runs is scoped to the one deployment the backend serves ([ADR-081](decision_log.md)).
 
 The manifest file is written by `contracts/script/Deploy.s.sol`, lives at
 `docs/deployments/<deployment_id>.json`, and validates against
@@ -395,16 +396,32 @@ One row per run, recomputed on every terminal transition and on demand.
 | `feasible_surplus_minor` | `NUMERIC(78,0) NULL` | **private**; signed, for the same reason |
 | `mandate_violations` | `INTEGER NOT NULL DEFAULT 0` | authorized actions outside mandate; target zero |
 | `failure_class` | `TEXT NULL` | `model`, `signing`, `rpc`, `execution`, `none`; `CHECK` refuses any other value |
-| `audit_complete` | `BOOLEAN NOT NULL DEFAULT false` | reconstruction matched projection |
+| `audit_complete` | `BOOLEAN NOT NULL DEFAULT false` | every mined authorised action, the outcome and the final balances reconcile with the canonical chain events ([ADR-077](decision_log.md)) |
 | `computed_at` | `TIMESTAMPTZ NOT NULL` | |
+| `rpc_requests` | `INTEGER NOT NULL DEFAULT 0` | JSON-RPC requests made while the run was driven ([ADR-061](decision_log.md)). `CHECK >= 0`. Migration 0004 |
+| `rpc_requests_by_method` | `JSONB NOT NULL DEFAULT '{}'` | the same, by JSON-RPC method. Migration 0004 |
+| `rpc_cost_estimated_usd` | `NUMERIC(12,6) NULL` | the counts priced from the RPC price table ([ADR-075](decision_log.md)); null when the deployment's provider, or a method, is unpriced — unknown, never zero. There is no reported column: no provider reports a per-request cost. Migration 0004 |
 
 The counters carry non-negative checks.
 
-Stage 2.5 adds, by migration and to the table above when it lands ([ADR-061](decision_log.md)):
-`rpc_requests INTEGER NOT NULL DEFAULT 0` (`CHECK >= 0`), `rpc_requests_by_method JSONB NOT NULL
-DEFAULT '{}'`, and `rpc_cost_estimated_usd NUMERIC(12,6) NULL` — the chain adapter's request counts
-for the run, priced from the operator-maintained RPC price table. There is no reported column: no
-provider reports a per-request cost, and a null estimate is displayed as unknown, never zero.
+**How each figure is computed** (stage 2.5, `api.metrics`). The row is recomputed after every turn and
+when the run ends — the controller is handed the calculator for that — and whenever
+`GET /v1/runs/{run_id}/metrics` or the export asks.
+
+| Figure | Definition |
+|---|---|
+| `recorded_offers` | canonical `OfferRecorded` events |
+| `decision_time_ms` | every decision attempt's reported `latency_ms`, either policy ([ADR-079](decision_log.md)) |
+| `chain_wait_ms`, `setup_chain_wait_ms` | per mined transaction of the negotiation's kinds (`record_offer`, `accept_and_settle`, `close_session`, `abort_session`, `expire_session`) or setup's (`create_session`, `mint`, `approve`, `fund_eth`), its receipt's `included_at` less the first `submitted_at` at its sender and nonce ([ADR-079](decision_log.md)) |
+| `model_calls`, tokens, model cost | the `model` policy's attempts only. `input_tokens` counts the cached input tokens too, read and created ([ADR-079](decision_log.md) as amended). A cost is the sum of the attempts', zero with no attempt, and null when any attempt's is |
+| `gas_used_*`, `fee_wei_*` | every mined transaction of those kinds, a reverted one included: `gas_used` and `gas_used × effective_gas_price_wei` |
+| `settled_quote_minor` | the `SettlementCompleted` event's `quoteAmount`, for a settled run |
+| utilities, `captured_surplus_minor` | against the bounds feasibility uses ([ADR-083](decision_log.md)): the most the buyer could pay less the price, the price less the least the seller could take; the surplus their sum, `0` for a run that ended — `terminal` or `failed_setup` — without a trade, null while it goes on. Where the buyer's capital does not bind these are spec 11.2's reservation utilities |
+| `feasible`, `feasible_surplus_minor` | [ADR-045](decision_log.md): the buyer can pay at most the lesser of its reservation and its quote balance less its floor, the seller take at least its reservation (at least 1), and the seller must keep its floor of base after delivering; feasible when the first is at least the second, the surplus their difference, null when infeasible |
+| `mandate_violations` | signed offers, and signed acceptances of an offer, at a price the signer's own mandate does not allow |
+| `failure_class` | from the cause that ended or stopped the run ([ADR-080](decision_log.md) as amended): `model`, `execution` (the indexer's `session_opening_missing` and `invalid_confirmation_threshold` included), `rpc` (`chain_unavailable` included), `signing`, `none` for a run that ended without a fault; null while it goes on or for `internal_error` |
+| `audit_complete` | [ADR-077](decision_log.md), checked against canonical `chain_events` without an RPC request |
+| `rpc_*` | added to by the controller as it drives the run (`add_rpc_requests`), never by a recomputation, which only prices them |
 
 ### 3.14 `run_events`
 
@@ -418,6 +435,8 @@ The SSE log. Append-only: a trigger refuses `UPDATE` and `DELETE`. The controlle
 | `data` | `JSONB NOT NULL` | already filtered to public content |
 
 Primary key `(run_id, cursor)`. `created_at` only; there is no `updated_at` on an append-only table.
+
+Since stage 2.5 the metrics calculator appends `metrics` — the run's metric strip — after each turn and when the run ends, and the route layer appends `operation` at each change of an operation's status ([ADR-073](decision_log.md)). The SSE route streams only the types api_contract section 3 lists.
 
 ### 3.15 `operations`
 
@@ -433,6 +452,8 @@ Primary key `(run_id, cursor)`. `created_at` only; there is no `updated_at` on a
 | `result`, `error` | `JSONB NULL` | |
 
 Unique: `(route, idempotency_key)`. Index: `(run_id)`.
+
+Since stage 2.5 a row is either a long-running operation (`start_run`, `step_run`, `resume_run`, `abort_run`), written for every such request, or the idempotency record of a request answered at once that carried a key (`create_run`, `validate_run`, `pause_run`, `clone_run`), whose `result` is the stored response. `route` is the concrete path, `POST /v1/runs/<run id>/start`; `request_hash` is `json_sha256` of the body. A refused request's row is `failed` and its key set back to null, so the key may be used again, as is a key older than 24 hours when next seen ([ADR-078](decision_log.md)). A row still `pending` past `IDEMPOTENCY_CLAIM_TIMEOUT_S` — its request never answered — is `failed` with error code `interrupted` and its key released when the key is next seen, and every unfinished row but an accepted long-running one is treated so at start-up (ADR-078 as amended).
 
 ### 3.16 `batches` and `batch_scenarios`
 

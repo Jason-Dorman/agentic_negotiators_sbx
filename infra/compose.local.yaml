@@ -1,8 +1,10 @@
 # Compose profile: local (docs/architecture.md section 4).
 #
-# Stage 0 brings up the two dependencies the rest of the stack is built against: PostgreSQL 16
-# and an Anvil chain on 31337. The api, agent-a, agent-b and web services are added in stage 2
-# of docs/build_plan.md, on the networks already declared below.
+# Stage 0 brought up the two dependencies the rest of the stack is built against: PostgreSQL 16
+# and an Anvil chain on 31337. Stage 2.5 adds the application: a one-shot `deploy` that puts the
+# contracts on the Anvil, the two agent instances, and the `api`. The web service arrives in
+# stage 4. `make up` starts only PostgreSQL and Anvil, which is all the test suites need; `make
+# stack` starts everything, reading infra/.env (docs/runbook.md section 8).
 #
 # Isolation from the operator's other projects is deliberate and has four parts: the Compose
 # project name `agent_negotiation` (see compose.yaml), a volume with an explicit project-scoped
@@ -83,18 +85,191 @@ services:
       - backend
     restart: unless-stopped
 
+  # The contracts, deployed each time the Anvil starts empty (Q57). Writes the manifest to the
+  # `deployments` volume and exits; `api` starts only once it has succeeded.
+  deploy:
+    image: ghcr.io/foundry-rs/foundry:v1.8.3
+    profiles: ["local"]
+    # Root inside the container so it can write the fresh named volumes; nothing is mounted
+    # writable from the host.
+    user: root
+    entrypoint: ["/bin/sh", "/src/infra/scripts/compose_deploy.sh"]
+    environment:
+      ANVIL_RPC_URL_CONTAINER: http://anvil:8545
+      # Read only to learn the two addresses the deployment records and funds (ADR-023).
+      RELAY_PRIVATE_KEY: ${RELAY_PRIVATE_KEY:-}
+      OPERATOR_PRIVATE_KEY: ${OPERATOR_PRIVATE_KEY:-}
+    volumes:
+      - ../contracts:/src/contracts:ro
+      - ./scripts/compose_deploy.sh:/src/infra/scripts/compose_deploy.sh:ro
+      - deployments:/deployments
+      # The solc binary, kept between runs so a restart does not download it again.
+      - foundry-svm:/root/.svm
+    depends_on:
+      anvil:
+        condition: service_healthy
+    networks:
+      - backend
+    restart: "no"
+
+  # One image, two instances, configured apart: each receives its own root and its own shared
+  # secret and never the other's (ADR-039). Each joins its own internal network, which only the api
+  # also joins, so an agent is reachable from the api and from nothing else — not the other agent —
+  # and reaches nothing outside.
+  agent-a:
+    build:
+      context: ..
+      dockerfile: services/agent/Dockerfile
+    image: agent-negotiation/agent:local
+    profiles: ["local"]
+    environment:
+      AGENT_ROLE: buyer
+      AGENT_INSTANCE: agent-a
+      AGENT_PORT: "8101"
+      AGENT_ROOT_KEY_REF: ${BUYER_ROOT_KEY_REF:-}
+      BUYER_ROOT_KEY: ${BUYER_ROOT_KEY:-}
+      AGENT_SHARED_SECRET: ${AGENT_A_SHARED_SECRET:-}
+      AGENT_SETUP_GAS_LIMIT_MAX: ${AGENT_SETUP_GAS_LIMIT_MAX:-100000}
+      AGENT_SETUP_MAX_COST_WEI: ${AGENT_SETUP_MAX_COST_WEI:-10000000000000000}
+      AGENT_LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "python", "-m", "agent.healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - agent-a
+    restart: unless-stopped
+
+  agent-b:
+    build:
+      context: ..
+      dockerfile: services/agent/Dockerfile
+    image: agent-negotiation/agent:local
+    profiles: ["local"]
+    environment:
+      AGENT_ROLE: seller
+      AGENT_INSTANCE: agent-b
+      AGENT_PORT: "8102"
+      AGENT_ROOT_KEY_REF: ${SELLER_ROOT_KEY_REF:-}
+      SELLER_ROOT_KEY: ${SELLER_ROOT_KEY:-}
+      AGENT_SHARED_SECRET: ${AGENT_B_SHARED_SECRET:-}
+      AGENT_SETUP_GAS_LIMIT_MAX: ${AGENT_SETUP_GAS_LIMIT_MAX:-100000}
+      AGENT_SETUP_MAX_COST_WEI: ${AGENT_SETUP_MAX_COST_WEI:-10000000000000000}
+      AGENT_LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "python", "-m", "agent.healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - agent-b
+    restart: unless-stopped
+
+  # The backend. It holds the relay and operator keys and the agents' shared secrets, and only the
+  # references to the agents' roots, never the roots themselves.
+  api:
+    build:
+      context: ..
+      dockerfile: services/api/Dockerfile
+    image: agent-negotiation/api:local
+    profiles: ["local"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL_CONTAINER:-postgresql+asyncpg://agent_negotiation:agent_negotiation@postgres:5432/agent_negotiation}
+      AUTO_MIGRATE: "true"
+      DEPLOYMENT_MANIFEST: /deployments/local-compose.json
+      RPC_PROVIDER: anvil
+      CHAIN_RPC_URL: http://anvil:8545
+      RPC_TIMEOUT_S: ${RPC_TIMEOUT_S:-10}
+      CONFIRMATION_THRESHOLD: ${CONFIRMATION_THRESHOLD:-1}
+      INDEXER_POLL_INTERVAL_S: ${INDEXER_POLL_INTERVAL_S:-1}
+      RELAY_KEY_REF: ${RELAY_KEY_REF:-env:RELAY_PRIVATE_KEY}
+      RELAY_PRIVATE_KEY: ${RELAY_PRIVATE_KEY:-}
+      OPERATOR_KEY_REF: ${OPERATOR_KEY_REF:-env:OPERATOR_PRIVATE_KEY}
+      OPERATOR_PRIVATE_KEY: ${OPERATOR_PRIVATE_KEY:-}
+      AGENT_A_URL: http://agent-a:8101
+      AGENT_B_URL: http://agent-b:8102
+      AGENT_A_SHARED_SECRET: ${AGENT_A_SHARED_SECRET:-}
+      AGENT_B_SHARED_SECRET: ${AGENT_B_SHARED_SECRET:-}
+      BUYER_ROOT_KEY_REF: ${BUYER_ROOT_KEY_REF:-}
+      SELLER_ROOT_KEY_REF: ${SELLER_ROOT_KEY_REF:-}
+      AGENT_SETUP_GAS_LIMIT_MAX: ${AGENT_SETUP_GAS_LIMIT_MAX:-100000}
+      SOFTWARE_VERSION: ${SOFTWARE_VERSION:-0.1.0}
+      OPERATOR_TOKEN: ${OPERATOR_TOKEN:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # The rest of the backend's tuning, each the documented default unless infra/.env says
+      # otherwise (infra/.env.example).
+      INDEXER_LOG_CHUNK_BLOCKS: ${INDEXER_LOG_CHUNK_BLOCKS:-2000}
+      RELAY_REPLACE_AFTER_BLOCKS: ${RELAY_REPLACE_AFTER_BLOCKS:-3}
+      RELAY_MAX_FEE_PER_GAS_WEI: ${RELAY_MAX_FEE_PER_GAS_WEI:-100000000000}
+      RELAY_FALLBACK_GAS_LIMIT: ${RELAY_FALLBACK_GAS_LIMIT:-500000}
+      RPC_OUTAGE_LIMIT_S: ${RPC_OUTAGE_LIMIT_S:-60}
+      RUN_LEASE_TTL_S: ${RUN_LEASE_TTL_S:-30}
+      AGENT_TIMEOUT_S: ${AGENT_TIMEOUT_S:-10}
+      EVENT_POLL_INTERVAL_S: ${EVENT_POLL_INTERVAL_S:-0.25}
+      SSE_KEEPALIVE_S: ${SSE_KEEPALIVE_S:-15}
+      IDEMPOTENCY_RETENTION_H: ${IDEMPOTENCY_RETENTION_H:-24}
+      IDEMPOTENCY_CLAIM_TIMEOUT_S: ${IDEMPOTENCY_CLAIM_TIMEOUT_S:-60}
+    ports:
+      # Published on 127.0.0.1 only, like every port here (ADR-028).
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - deployments:/deployments:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      anvil:
+        condition: service_healthy
+      deploy:
+        condition: service_completed_successfully
+      agent-a:
+        condition: service_healthy
+      agent-b:
+        condition: service_healthy
+    # Docker's stop grace, above the api's own five-second graceful phase (ADR-082), so its
+    # lifespan gives the lease up before the container is killed.
+    stop_grace_period: 15s
+    networks:
+      - backend
+      - agent-a
+      - agent-b
+    restart: unless-stopped
+
 volumes:
   postgres-data:
     # An explicit name, so the volume is `agent_negotiation_postgres_data` exactly rather than
     # the project prefix plus a generic key. It is this project's database and no other's;
     # `make reset-db` is the only thing that destroys it.
     name: agent_negotiation_postgres_data
+  # The `local-compose` manifest, written by `deploy` and read by `api`.
+  deployments:
+    name: agent_negotiation_deployments
+  foundry-svm:
+    name: agent_negotiation_foundry_svm
 
 networks:
-  # Agent services join `agents` only, so they are reachable from the backend and from nothing
-  # else (docs/architecture.md section 4, docs/security_and_trust_boundaries.md section 2).
+  # Each agent joins its own network only, which the api also joins, so it is reachable from the
+  # backend and from nothing else (docs/architecture.md section 4,
+  # docs/security_and_trust_boundaries.md section 2).
   backend:
     driver: bridge
-  agents:
+  agent-a:
+    driver: bridge
+    internal: true
+  agent-b:
     driver: bridge
     internal: true

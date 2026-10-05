@@ -151,6 +151,9 @@ class Indexer:
         self._chain = chain
         self._codec = codec
         self._chain_id = deployment.chain_id
+        #: ADR-081: only this deployment's runs are watched, polled and re-verified. A run on
+        #: another chain — a restarted Anvil's predecessor — is never compared with this one.
+        self._deployment_id = deployment.deployment_id
         self._renderer = renderer
         self._policy = policy
         self._clock = clock
@@ -164,7 +167,9 @@ class Indexer:
         finalized = min(await self._chain.finalized_number(), head.number)
         poll = _Poll(head=head.number, finalized=finalized)
         async with self._transactions.unit_of_work() as uow:
-            poll.watched = {run.id: run for run in await uow.runs.with_open_sessions()}
+            poll.watched = {
+                run.id: run for run in await uow.runs.with_open_sessions(self._deployment_id)
+            }
         reorg = await self._check_reorg(poll)
         await self._poll_receipts(poll)
         await self._scan_logs(poll)
@@ -207,10 +212,12 @@ class Indexer:
             poll.problem(run.id, "invalid_confirmation_threshold", str(error))
             return None
 
-    @staticmethod
-    def _watched(run: RunRecord | None) -> bool:
-        # Q20, interim answer: a terminal run is no longer watched for reorgs.
-        return run is None or run.state != RunState.TERMINAL
+    def _watched(self, run: RunRecord | None) -> bool:
+        # Q20, interim answer: a terminal run is no longer watched for reorgs; nor is a run on
+        # another chain (ADR-081).
+        if run is None:
+            return True
+        return run.state != RunState.TERMINAL and run.deployment_id == self._deployment_id
 
     # -----------------------------------------------------------------------------------------
     # 1. Reorg check
@@ -229,7 +236,7 @@ class Indexer:
             ):
                 if event.run_id is None or self._watched(await self._run(uow, poll, event.run_id)):
                     watch(event.block_number, event.block_hash)
-            for row in await uow.outbox.with_block_from(poll.finalized + 1):
+            for row in await uow.outbox.with_block_from(poll.finalized + 1, self._deployment_id):
                 if self._watched(await self._run(uow, poll, row.run_id)):
                     watch(row.block_number, row.block_hash)
             for run_id in poll.watched:
@@ -294,12 +301,15 @@ class Indexer:
             run_ids=tuple(sorted(digests, key=str)),
         )
 
-    @staticmethod
     async def _reset_inclusions(
-        uow: UnitOfWork, stale: set[Digest], fork: int, digests: dict[uuid.UUID, list[Digest]]
+        self,
+        uow: UnitOfWork,
+        stale: set[Digest],
+        fork: int,
+        digests: dict[uuid.UUID, list[Digest]],
     ) -> list[OutboxRecord]:
         reset: list[OutboxRecord] = []
-        for row in await uow.outbox.with_block_from(fork):
+        for row in await uow.outbox.with_block_from(fork, self._deployment_id):
             if row.block_hash not in stale:
                 continue
             reset.append(await uow.outbox.clear_inclusion(row.id))
@@ -315,7 +325,7 @@ class Indexer:
 
     async def _poll_receipts(self, poll: _Poll) -> None:
         async with self._transactions.unit_of_work() as uow:
-            waiting = await uow.outbox.awaiting_receipt()
+            waiting = await uow.outbox.awaiting_receipt(self._deployment_id)
         settled_groups: set[tuple[Address, int]] = set()
         for row in waiting:
             if (row.sender, row.nonce) in settled_groups:
@@ -349,11 +359,10 @@ class Indexer:
         for log in receipt.logs:
             poll.logs[(log.block_hash, log.tx_hash, log.log_index)] = log
 
-    @staticmethod
-    async def _drop_rivals(uow: UnitOfWork, row: OutboxRecord) -> list[OutboxRecord]:
+    async def _drop_rivals(self, uow: UnitOfWork, row: OutboxRecord) -> list[OutboxRecord]:
         """The mined transaction wins: every other live one at its nonce, or for its signed action,
         can never be mined as well, and the index of one live transaction per action is kept."""
-        rivals = list(await uow.outbox.nonce_group(row.sender, row.nonce))
+        rivals = list(await uow.outbox.nonce_group(row.sender, row.nonce, self._deployment_id))
         if row.signed_action_id is not None:
             live = await uow.outbox.live_for_signed_action(row.signed_action_id)
             if live is not None:
@@ -497,7 +506,9 @@ class Indexer:
                 depth = poll.head - event.block_number + 1
                 if event.confirmations_at_index != depth and depth >= 0:
                     await uow.chain_events.set_confirmations(event.id, depth)
-            for row in await uow.outbox.in_status(TxStatus.INCLUDED, TxStatus.CONFIRMED):
+            for row in await uow.outbox.in_status(
+                TxStatus.INCLUDED, TxStatus.CONFIRMED, deployment_id=self._deployment_id
+            ):
                 status = await self._settled_status(uow, poll, row)
                 if status is not None:
                     updated = await uow.outbox.update_status(row.id, status)
@@ -511,12 +522,14 @@ class Indexer:
         The second half is why an event that passed the finalized head between two polls still
         reaches its run's threshold in `confirmations_at_index` (data model invariant 7).
         """
-        events = {
-            event.id: event
-            for event in await uow.chain_events.canonical_from_block(
-                self._chain_id, self._codec.exchange, poll.finalized + 1
-            )
-        }
+        events: dict[uuid.UUID, ChainEventRecord] = {}
+        for event in await uow.chain_events.canonical_from_block(
+            self._chain_id, self._codec.exchange, poll.finalized + 1
+        ):
+            run = None if event.run_id is None else await self._run(uow, poll, event.run_id)
+            # ADR-081: another chain's event has no depth on this one.
+            if run is None or run.deployment_id == self._deployment_id:
+                events[event.id] = event
         for run_id in poll.watched:
             for event in await uow.chain_events.canonical_for_run(run_id):
                 events[event.id] = event

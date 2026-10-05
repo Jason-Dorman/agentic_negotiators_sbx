@@ -194,7 +194,7 @@ class ControllerHarness:
         self.database = database
         self.chain = chain
         self.agents = agents or Agents()
-        self.deployment = deployment_from_manifest(chain.manifest)
+        self.deployment = deployment_from_manifest(chain.manifest, chain.genesis_hash)
         self.threshold = threshold
         self.holder = holder or f"test-{uuid.uuid4().hex[:8]}"
         self.sleep = sleep or self._sleep

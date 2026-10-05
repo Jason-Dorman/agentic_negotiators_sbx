@@ -928,7 +928,9 @@
         "model_cost_estimated_usd",
         "model_cost_reported_usd",
         "gas_used",
-        "fee_wei"
+        "fee_wei",
+        "rpc_requests",
+        "rpc_cost_estimated_usd"
       ],
       "properties": {
         "recorded_offers": {
@@ -959,6 +961,15 @@
         },
         "fee_wei": {
           "$ref": "#/$defs/minorAmount"
+        },
+        "rpc_requests": {
+          "description": "JSON-RPC requests made while the run was driven (ADR-061). Exact and local.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "rpc_cost_estimated_usd": {
+          "description": "The requests priced from the operator's RPC price table. An estimate, never reported by a provider; null is unknown, never zero (ADR-061).",
+          "$ref": "#/$defs/usdAmount"
         }
       }
     },
@@ -983,7 +994,10 @@
         "settled_quote_minor",
         "mandate_violations",
         "failure_class",
-        "audit_complete"
+        "audit_complete",
+        "rpc_requests",
+        "rpc_requests_by_method",
+        "rpc_cost_estimated_usd"
       ],
       "properties": {
         "recorded_offers": {
@@ -1041,11 +1055,32 @@
           "minimum": 0
         },
         "failure_class": {
-          "enum": ["model", "signing", "rpc", "execution", "none"]
+          "description": "Spec 11.2's operational failure class, from the cause that ended or stopped the run; `none` for a run that ended without a fault, and null while the run goes on or for a stop no class describes (docs/data_model.md section 3.13).",
+          "enum": ["model", "signing", "rpc", "execution", "none", null]
         },
         "audit_complete": {
-          "description": "True when the reconstruction from chain data agreed with the projection (acceptance A15).",
+          "description": "True when every authorised action that was mined, the outcome and the final balances reconcile with the canonical chain events the indexer read and verified (Q58). The database-free reconstruction is the A15 tool's, run separately.",
           "type": "boolean"
+        },
+        "rpc_requests": {
+          "description": "JSON-RPC requests made while the run was driven (ADR-061).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "rpc_requests_by_method": {
+          "description": "The same requests by JSON-RPC method. Keys are method names in a JSON-RPC namespace and values counts, so nothing but a count can ride here.",
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(eth|net|web3|debug|trace|txpool|anvil|evm|alchemy)_[A-Za-z0-9]+$"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "rpc_cost_estimated_usd": {
+          "description": "The requests priced from the operator's RPC price table: an estimate, and null when the table does not price the deployment's provider — unknown, never zero (ADR-061).",
+          "$ref": "#/$defs/usdAmount"
         }
       }
     },

@@ -78,7 +78,9 @@ PUBLIC_CONFIG: Final[dict[str, Any]] = {
 }
 
 
-def deployment_from_manifest(manifest: dict[str, Any]) -> DeploymentRecord:
+def deployment_from_manifest(
+    manifest: dict[str, Any], genesis_hash: str | None = None
+) -> DeploymentRecord:
     document = {key: value for key, value in manifest.items() if key != "_path"}
     return DeploymentRecord(
         deployment_id=document["deployment_id"],
@@ -96,6 +98,7 @@ def deployment_from_manifest(manifest: dict[str, Any]) -> DeploymentRecord:
         manifest=document,
         start_block=int(document["start_block"]),
         deployed_at=datetime.fromtimestamp(int(document["deployed_at_ts"]), tz=UTC),
+        genesis_hash=None if genesis_hash is None else Digest(genesis_hash),
     )
 
 
@@ -117,6 +120,8 @@ class AnvilChain:
         self.quote_token = self._contract("quote_token_address", "MockERC20")
         self.domain = Domain(int(manifest["chain_id"]), manifest["exchange_address"])
         self.automining = True
+        #: Block 0's hash: what identifies this chain instance, beside its ID (ADR-081).
+        self.genesis_hash = "0x" + bytes(self.w3.eth.get_block(0)["hash"]).hex()
 
     def _contract(self, key: str, abi: str) -> Contract:
         return self.w3.eth.contract(
@@ -334,7 +339,7 @@ class Backend:
     ) -> None:
         self.database = database
         self.chain = chain
-        self.deployment = deployment_from_manifest(chain.manifest)
+        self.deployment = deployment_from_manifest(chain.manifest, chain.genesis_hash)
         self.codec = ExchangeCodec(
             self.deployment.exchange_address,
             self.deployment.base_token_address,
@@ -353,6 +358,7 @@ class Backend:
             adapter or self.adapter,
             self.codec,
             chain_id=self.deployment.chain_id,
+            deployment_id=self.deployment.deployment_id,
             relay_signer=LocalTransactionSigner.from_reference("env:RELAY_KEY", environ, "relay"),
             operator_signer=LocalTransactionSigner.from_reference(
                 "env:OPERATOR_KEY", environ, "operator"

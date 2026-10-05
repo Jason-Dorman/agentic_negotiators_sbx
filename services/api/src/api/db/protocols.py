@@ -20,12 +20,20 @@ Three of these interfaces carry a rule, not only a shape:
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
-from api.db.enums import ActionStatus, OperationStatus, Party, RunState, TurnState, TxStatus
+from api.db.enums import (
+    ActionStatus,
+    OperationStatus,
+    OutcomeKind,
+    Party,
+    RunState,
+    TurnState,
+    TxStatus,
+)
 from api.db.records import (
     BalanceSnapshotRecord,
     ChainEventRecord,
@@ -82,8 +90,21 @@ class RunRepository(Protocol):
         """The run a chain session belongs to: how the indexer attributes an event to a run."""
         ...
 
-    async def with_open_sessions(self) -> list[RunRecord]:
-        """Runs with a session that are not `terminal`: what the indexer watches (ADR-053)."""
+    async def list_page(
+        self,
+        *,
+        limit: int,
+        state: RunState | None = None,
+        outcome: OutcomeKind | None = None,
+        batch_id: uuid.UUID | None = None,
+        before: tuple[datetime, uuid.UUID] | None = None,
+    ) -> list[RunRecord]:
+        """Newest first, by `(created_at, id)`; `before` is the last row of the previous page."""
+        ...
+
+    async def with_open_sessions(self, deployment_id: str) -> list[RunRecord]:
+        """Runs with a session that are not finished, on one deployment: what the indexer watches
+        (ADR-053). Runs on another chain are not watched (ADR-081)."""
         ...
 
     async def update_state(
@@ -232,31 +253,40 @@ class OutboxRepository(Protocol):
         ...
 
     async def live_for_signed_action(self, signed_action_id: uuid.UUID) -> OutboxRecord | None: ...
-    async def max_nonce(self, sender: Address) -> int | None: ...
+    async def max_nonce(self, sender: Address, deployment_id: str) -> int | None:
+        """The highest nonce recorded for a sender, among runs on one deployment (ADR-081): a
+        restarted chain's nonces start again, and another chain's history must not raise them."""
+        ...
 
     async def for_signed_action(self, signed_action_id: uuid.UUID) -> list[OutboxRecord]:
         """Every transaction ever signed for one action, oldest first."""
         ...
 
-    async def nonce_group(self, sender: Address, nonce: int) -> list[OutboxRecord]:
-        """Every transaction signed for one sender and nonce: an original and its replacements."""
+    async def nonce_group(
+        self, sender: Address, nonce: int, deployment_id: str
+    ) -> list[OutboxRecord]:
+        """Every transaction signed for one sender and nonce on one deployment's chain: an
+        original and its replacements (ADR-081)."""
         ...
 
-    async def awaiting_receipt(self) -> list[OutboxRecord]:
+    async def awaiting_receipt(self, deployment_id: str) -> list[OutboxRecord]:
         """What the indexer polls receipts for: rows `pending`, `submitted`, `replaced` or `dropped`
         with no block, of runs not `terminal`, in a sender-and-nonce group none of whose
         transactions has been included yet.
 
         A `replaced` original or a `dropped` sibling is polled too, because either can still be the
-        one that is mined.
+        one that is mined. Only runs on the deployment named (ADR-081).
         """
         ...
 
-    async def with_block_from(self, from_block: int) -> list[OutboxRecord]:
-        """Rows recorded as included at or above a height: what a reorg check re-verifies."""
+    async def with_block_from(self, from_block: int, deployment_id: str) -> list[OutboxRecord]:
+        """Rows of one deployment's runs recorded as included at or above a height: what a reorg
+        check re-verifies."""
         ...
 
-    async def in_status(self, *statuses: TxStatus) -> list[OutboxRecord]: ...
+    async def in_status(self, *statuses: TxStatus, deployment_id: str) -> list[OutboxRecord]:
+        """Rows of one deployment's runs in any of these statuses."""
+        ...
 
     async def mark_submitted(
         self, outbox_id: uuid.UUID, at: datetime, submitted_block: int | None = None
@@ -339,8 +369,18 @@ class BalanceSnapshotRepository(Protocol):
 
 
 class RunMetricsRepository(Protocol):
-    async def upsert(self, metrics: RunMetricsRecord) -> None: ...
+    async def upsert(self, metrics: RunMetricsRecord) -> None:
+        """Insert or replace every column but the RPC counts, which only `add_rpc_requests`
+        writes: a recomputation never loses requests counted while it ran (ADR-061)."""
+        ...
+
     async def get(self, run_id: uuid.UUID) -> RunMetricsRecord | None: ...
+
+    async def add_rpc_requests(
+        self, run_id: uuid.UUID, by_method: Mapping[str, int], at: datetime
+    ) -> RunMetricsRecord:
+        """Add request counts, by JSON-RPC method, to the run's totals."""
+        ...
 
 
 class RunEventRepository(Protocol):
@@ -358,6 +398,10 @@ class RunEventRepository(Protocol):
         """The run's most recent event of one type, or None."""
         ...
 
+    async def last_cursor(self, run_id: uuid.UUID, before: datetime | None = None) -> int:
+        """The run's highest cursor, or of the events written before a moment; 0 for none."""
+        ...
+
 
 class OperationRepository(Protocol):
     async def create(self, new: NewOperation) -> OperationRecord:
@@ -366,6 +410,15 @@ class OperationRepository(Protocol):
 
     async def get(self, operation_id: uuid.UUID) -> OperationRecord | None: ...
     async def get_by_key(self, route: str, idempotency_key: str) -> OperationRecord | None: ...
+
+    async def unfinished(self) -> list[OperationRecord]:
+        """Operations still `pending` or `running`: what a restarted process tracks again."""
+        ...
+
+    async def release_key(self, operation_id: uuid.UUID) -> OperationRecord:
+        """Forget the operation's idempotency key, so the key may be used again: after a refused
+        request, which is not replayed, or once the key's 24 hours have passed."""
+        ...
 
     async def update(
         self,

@@ -127,6 +127,7 @@ TABLES: dict[str, dict[str, str]] = {
         "manifest": f"JSONB {NN}",
         "start_block": f"BIGINT {NN}",
         "deployed_at": f"{TS} {NN}",
+        "genesis_hash": f"TEXT {N}",
         **COMMON,
     },
     "runs": {
@@ -334,6 +335,9 @@ TABLES: dict[str, dict[str, str]] = {
         "failure_class": f"TEXT {N}",
         "audit_complete": f"BOOLEAN {NN}",
         "computed_at": f"{TS} {NN}",
+        "rpc_requests": f"INTEGER {NN}",
+        "rpc_requests_by_method": f"JSONB {NN}",
+        "rpc_cost_estimated_usd": f"{USD} {N}",
         **COMMON,
     },
     "run_events": {
@@ -383,7 +387,7 @@ TABLES: dict[str, dict[str, str]] = {
 #: the primary keys, which are unique by definition.
 UNIQUE: dict[str, set[tuple[str, ...]]] = {
     "scenarios": {("scenario_id",)},
-    "deployments": {("deployment_id",), ("chain_id", "exchange_address")},
+    "deployments": {("deployment_id",), ("chain_id", "genesis_hash", "exchange_address")},
     "runs": {("id",), ("session_id",)},
     "mandate_versions": {("id",), ("run_id", "party")},
     "wallets": {("id",), ("run_id", "party"), ("address",)},
@@ -460,6 +464,7 @@ CHECKS: dict[str, set[str]] = {
         "setup_chain_wait_ms",
         "model_calls",
         "input_tokens",
+        "rpc_requests",
         "output_tokens",
         "mandate_violations",
     ),

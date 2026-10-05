@@ -17,6 +17,7 @@ from api.chain.codec import (
     ExchangeCodec,
     Transfer,
 )
+from api.chain.counting import RpcCounter
 from api.chain.errors import (
     ChainError,
     ExecutionRevertedError,
@@ -41,6 +42,7 @@ __all__ = [
     "FeeQuote",
     "RawLog",
     "Receipt",
+    "RpcCounter",
     "RpcUnavailableError",
     "TransactionRejectedError",
     "TransactionView",

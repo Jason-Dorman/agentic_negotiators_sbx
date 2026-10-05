@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import asdict
-from typing import Any
+from datetime import datetime
+from typing import Any, Final
 
 from sqlalchemy import func, literal, select, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
@@ -15,6 +17,10 @@ from api.db.protocols import OperationRepository, RunEventRepository, RunMetrics
 from api.db.records import NewOperation, OperationRecord, RunEventRecord, RunMetricsRecord
 from api.db.repositories._base import SqlRepository, required
 
+#: Written only by `add_rpc_requests`, so a recomputation that read the counts a moment earlier can
+#: never write a smaller figure over requests counted since (ADR-061).
+_ACCUMULATED: Final = frozenset({"run_id", "rpc_requests", "rpc_requests_by_method"})
+
 
 class SqlRunMetricsRepository(SqlRepository, RunMetricsRepository):
     async def upsert(self, metrics: RunMetricsRecord) -> None:
@@ -23,11 +29,38 @@ class SqlRunMetricsRepository(SqlRepository, RunMetricsRepository):
         statement = statement.on_conflict_do_update(
             index_elements=[RunMetrics.run_id],
             set_={
-                **{name: statement.excluded[name] for name in values if name != "run_id"},
+                **{name: statement.excluded[name] for name in values if name not in _ACCUMULATED},
                 "updated_at": func.now(),
             },
         )
         await self._write(statement)
+
+    async def add_rpc_requests(
+        self, run_id: uuid.UUID, by_method: Mapping[str, int], at: datetime
+    ) -> RunMetricsRecord:
+        await self._write(
+            insert(RunMetrics)
+            .values(run_id=run_id, computed_at=at)
+            .on_conflict_do_nothing(index_elements=[RunMetrics.run_id])
+        )
+        locked = await self._one_or_none(
+            select(RunMetrics).where(RunMetrics.run_id == run_id).with_for_update()
+        )
+        row = required(locked, f"metrics of run {run_id}")
+        merged = {str(name): int(count) for name, count in row.rpc_requests_by_method.items()}
+        for name, count in by_method.items():
+            merged[name] = merged.get(name, 0) + count
+        statement = (
+            update(RunMetrics)
+            .where(RunMetrics.run_id == run_id)
+            .values(
+                rpc_requests=RunMetrics.rpc_requests + sum(by_method.values()),
+                rpc_requests_by_method=literal(merged, JSONB),
+                updated_at=func.now(),
+            )
+            .returning(RunMetrics)
+        )
+        return RunMetricsRecord.from_row(await self._write_scalar(statement))
 
     async def get(self, run_id: uuid.UUID) -> RunMetricsRecord | None:
         row = await self._get(RunMetrics, run_id)
@@ -72,6 +105,15 @@ class SqlRunEventRepository(SqlRepository, RunEventRepository):
         )
         return [RunEventRecord.from_row(row) for row in rows]
 
+    async def last_cursor(self, run_id: uuid.UUID, before: datetime | None = None) -> int:
+        statement = select(func.coalesce(func.max(RunEvent.cursor), 0)).where(
+            RunEvent.run_id == run_id
+        )
+        if before is not None:
+            statement = statement.where(RunEvent.created_at < before)
+        result = await self._session.execute(statement)
+        return int(result.scalar_one())
+
     async def latest(self, run_id: uuid.UUID, event_type: str) -> RunEventRecord | None:
         row = await self._one_or_none(
             select(RunEvent)
@@ -90,6 +132,24 @@ class SqlOperationRepository(SqlRepository, OperationRepository):
     async def get(self, operation_id: uuid.UUID) -> OperationRecord | None:
         row = await self._get(Operation, operation_id)
         return None if row is None else OperationRecord.from_row(row)
+
+    async def unfinished(self) -> list[OperationRecord]:
+        rows = await self._all(
+            select(Operation)
+            .where(Operation.status.in_((OperationStatus.PENDING, OperationStatus.RUNNING)))
+            .order_by(Operation.created_at)
+        )
+        return [OperationRecord.from_row(row) for row in rows]
+
+    async def release_key(self, operation_id: uuid.UUID) -> OperationRecord:
+        statement = (
+            update(Operation)
+            .where(Operation.id == operation_id)
+            .values(idempotency_key=None, updated_at=func.now())
+            .returning(Operation)
+        )
+        row = required(await self._write_scalar(statement), f"operation {operation_id}")
+        return OperationRecord.from_row(row)
 
     async def get_by_key(self, route: str, idempotency_key: str) -> OperationRecord | None:
         row = await self._one_or_none(
@@ -110,7 +170,7 @@ class SqlOperationRepository(SqlRepository, OperationRepository):
         statement = (
             update(Operation)
             .where(Operation.id == operation_id)
-            .values(status=status, result=result, error=error)
+            .values(status=status, result=result, error=error, updated_at=func.now())
             .returning(Operation)
         )
         row = required(await self._write_scalar(statement), f"operation {operation_id}")

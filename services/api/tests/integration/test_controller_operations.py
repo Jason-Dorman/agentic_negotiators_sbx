@@ -377,7 +377,7 @@ async def test_a_session_an_agent_refuses_ends_in_failed_setup(
     assert (run.outcome_kind, run.outcome_reason_code) == (OutcomeKind.ABORTED, 4)
     async with harness.database.unit_of_work() as uow:
         assert await uow.leases.active_run_id() is None
-        watched = await uow.runs.with_open_sessions()
+        watched = await uow.runs.with_open_sessions(harness.deployment.deployment_id)
     assert run.id not in [r.id for r in watched], "a failed setup is not watched for good"
 
 

@@ -1,0 +1,13 @@
+{
+  "table_version": "1",
+  "providers": {
+    "anvil": {
+      "description": "The local Anvil chain of the Compose profile. It costs nothing to call, so every request is priced at zero.",
+      "source": "Local process; no provider bills it (ADR-061).",
+      "last_verified": "2026-10-02",
+      "usd_per_million_units": "0",
+      "units_by_method": {},
+      "default_units": 0
+    }
+  }
+}

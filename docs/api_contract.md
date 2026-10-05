@@ -4,7 +4,7 @@
 |---|---|
 | **Version** | 0.1.0 (URL prefix `/v1`) |
 | **Date** | 19 September 2026 |
-| **Status** | Draft for build; the FastAPI OpenAPI document generated from code is authoritative once it exists and must match this contract |
+| **Status** | Built in stage 2.5 (`services/api/src/api/routes/`). The FastAPI OpenAPI document is authoritative and must match this contract: it is snapshotted in `services/api/tests/contract/openapi.snapshot.json`, and the contract test also checks the routes against the headings of section 2 (section 8) |
 | **Source** | Spec sections 3, 5.4, 10.1 |
 | **Related** | [protocol.md](protocol.md), [data_model.md](data_model.md), [architecture.md](architecture.md) |
 
@@ -22,11 +22,11 @@ Two APIs are defined: the **operator API** served by the backend to the browser 
 | Amounts | Base-10 integer strings in minor units, never JSON numbers. Field names end in `_minor`. |
 | Timestamps | Application timestamps: ISO 8601 UTC with `Z`, field names end in `_at`. Chain timestamps: integer Unix seconds, field names end in `_ts` or are named `expires_at_ts`. |
 | Enums | Lowercase snake_case strings. Integer codes appear only where the protocol defines them (`reason_code`). |
-| Idempotency | Every `POST` accepts `Idempotency-Key` (UUID). A repeated key with the same body returns the stored response with `Idempotent-Replayed: true`. Same key with a different body returns `409 idempotency_conflict`. Keys are scoped per route and retained 24 h. |
-| Operations | Any route that may take more than one second returns `202` with an operation record and `Location: /v1/operations/{operation_id}`. |
+| Idempotency | Every `POST` accepts `Idempotency-Key` (UUID; anything else is `400 bad_request`). A repeated key with the same body returns the stored response with `Idempotent-Replayed: true`. Same key with a different body returns `409 idempotency_conflict`. Keys are scoped per route — the concrete path, `POST /v1/runs/<run id>/start`, so per run — and retained 24 h. Since stage 2.5 ([ADR-078](decision_log.md)): the key is claimed before the work, so of two racing requests one does it; only success is stored and replayed, so a refused request — a cancelled one too — frees its key and a retry with it does the work again; the same key while the first request is still being answered is `409 idempotency_conflict` for a request answered at once, and for a long-running route its live operation, `202` with `Idempotent-Replayed: true` (ADR-078 as amended); a long-running route's replay is always its operation record as it stands now. A claim whose request never answered — the process died — is released `IDEMPOTENCY_CLAIM_TIMEOUT_S` (60 s) after the claim when the key is next seen, and at start-up, its operation recorded `failed` with code `interrupted`. "Same body" means the same `json_sha256` of the JSON, so key order and whitespace do not matter. |
+| Operations | Any route that may take more than one second returns `202` with an operation record and `Location: /v1/operations/{operation_id}`: `start`, `step`, `resume` and `abort`. The record is `running` once the controller has made the run's transition, and records how that ended (section 1.2). |
 | Authentication | None on localhost by default. When `OPERATOR_TOKEN` is configured, every route except `/health` requires `Authorization: Bearer <token>`. Remote exposure additionally requires TLS termination in front of the backend, and exposing the API on a network the operator does not control requires the STRIDE review in [security_and_trust_boundaries.md](security_and_trust_boundaries.md) section 8.1 first ([ADR-028](decision_log.md)). |
 | Privacy headers | Routes that reveal private inputs require `X-Observer-Reveal: true`. Without it they return `403 reveal_required`. The header is a deliberate friction, not a security boundary. |
-| Pagination | List routes take `limit` (default 50, max 200) and `cursor`; responses carry `next_cursor` or `null`. |
+| Pagination | List routes take `limit` (default 50, max 200) and `cursor`; responses carry `next_cursor` or `null`. A cursor is opaque; one that does not decode as one of this API's is `400 bad_request`. It is not signed, so a well-formed hand-made cursor is read as a position. |
 | Versioning | Breaking changes bump the URL prefix. Additive fields are non-breaking. Clients must ignore unknown fields. |
 
 ### 1.1 Error envelope
@@ -59,6 +59,17 @@ HTTP status follows the code table in section 7.
 }
 ```
 
+`kind` is `start_run`, `step_run`, `resume_run` or `abort_run` for the long-running routes, and `create_run`, `validate_run`, `pause_run` or `clone_run` for a request answered at once that carried an idempotency key, whose `result` is the stored response. A long-running operation is decided by the run's state changes ([ADR-073](decision_log.md)):
+
+| `kind` | `succeeded` when the run is | `failed` when the run is |
+|---|---|---|
+| `start_run` | `running`, or `terminal` if it ended first | `recovery_required` or `failed_setup` |
+| `step_run` | `paused` with cause `step_complete`, or `terminal` | `recovery_required` or `failed_setup`; for a start or a step also `paused` with cause `reorg` or `session_open`, short of what it asked for (Q64) |
+| `resume_run` | `running`; `paused` or `preparing` with cause `recovered`; or `terminal` | `recovery_required` or `failed_setup` |
+| `abort_run` | `terminal` or `failed_setup` — the outcome says whether the abort or a settlement won | `recovery_required`, reached after the abort was sent; the state an abort was sent from does not count |
+
+`result` is the deciding state change, `{ "state", "state_cause", "outcome" }`; `error` is `{ "code": <the state>, "message", "details": <the same> }`. A request the controller refuses is answered with its error, and its operation is recorded `failed` with that error's code. An operation whose request died with its process before it was accepted is `failed` with code `interrupted` at the next start-up; an accepted one is tracked again from the events written since. Each status change is also an `operation` event on the run's stream (section 3).
+
 ---
 
 ## 2. Operator API
@@ -71,11 +82,11 @@ HTTP status follows the code table in section 7.
 { "status": "ok", "version": "0.1.0", "chain_id": 31337, "rpc_ok": true, "db_ok": true, "agent_a_ok": true, "agent_b_ok": true }
 ```
 
-`503` with the same shape when any dependency is down.
+`503` with the same shape, `status` `"degraded"`, when any dependency is down. `version` is the backend's `SOFTWARE_VERSION`. `rpc_ok` means the RPC answered with the deployment's chain ID and, since stage 2.5's review, its genesis block, so a restarted Anvil is not taken for the chain it replaced ([ADR-081](decision_log.md)); `agent_*_ok` that the agent answered as its role with its signer loaded. Never behind the operator token.
 
 #### `GET /v1/deployments`
 
-Lists deployment manifests known to the backend.
+Lists deployment manifests known to the backend. The backend serves the one named by `DEPLOYMENT_MANIFEST`, which it validates and upserts at start-up; any earlier one stored stays listed. At start-up it checks the RPC is the manifest's chain — its chain ID, the exchange's code at its address, and for a deployment loaded before the same genesis block — and refuses to start otherwise; the deployment is stored with its chain's genesis hash ([ADR-081](decision_log.md)). Runs belong to their deployment: an operation on a run of a deployment this backend does not serve is `409 invalid_state` with `details.deployment`.
 
 `explorer_base_url` is `https://sepolia.etherscan.io` for chain 11155111 and `null` for the local chain, which has no explorer. Every transaction the backend records on a chain with an explorer base URL exposes a resolvable `explorer_url`, so an observer can open any recorded action on Etherscan without leaving the evidence trail.
 
@@ -107,7 +118,7 @@ Lists deployment manifests known to the backend.
 
 #### `GET /v1/scenarios`
 
-Lists scenario templates from `scenarios/`.
+Lists scenario templates from `scenarios/`, each validated against `scenario.v1.json` and upserted by `scenario_id` at start-up.
 
 ```json
 { "scenarios": [ { "scenario_id": "default-overlap", "name": "…", "description": "…", "feasibility_hint": null } ] }
@@ -170,11 +181,15 @@ Response `201`: the run resource (section 2.3) in state `draft`. Mandates are st
 
 Both agents are provisioned before the response, inside the run's own unit of work (stage 2.4, [ADR-039](decision_log.md)): each derives the run's wallet and reports its address. If either does not answer, the response is `503 dependency_unavailable`; if either refuses — a policy it cannot run, say — `422 validation_error` with the agent's `agent_code`. Either way nothing of the run is kept, and an agent that did provision it is told to release it. The request body is parsed by `api.controller.RunRequest`; every amount through `MinorAmount`, so one with a trailing newline is refused, and no refusal repeats a value.
 
-Validation errors (`422 validation_error`) include: unknown scenario or deployment, `max_offers` outside 1..32, non-integer amount strings, `model_id` missing for a model policy, `first_proposer` other than `buyer`.
+Validation errors (`422 validation_error`) include: unknown scenario or deployment, `max_offers` outside 1..32, non-integer amount strings, `model_id` missing for a model policy, `first_proposer` other than `buyer`, and a NUL character in any free-text field ([ADR-084](decision_log.md)).
 
 #### `GET /v1/runs`
 
-Query: `state`, `outcome`, `batch_id`, `limit`, `cursor`. Returns `{ "runs": [ …run summaries… ], "next_cursor": … }`.
+Query: `state`, `outcome`, `batch_id`, `limit`, `cursor`. Returns `{ "runs": [ …run summaries… ], "next_cursor": … }`, newest first. A run summary is the run's identity, state and outcome, and nothing derived from the chain:
+
+```json
+{ "run_id": "…", "name": "…", "parent_run_id": null, "batch_id": null, "scenario_id": "default-overlap", "deployment_id": "…", "created_at": "…", "state": "terminal", "state_cause": null, "mode": "live", "outcome": { … } }
+```
 
 #### `GET /v1/runs/{run_id}`
 
@@ -223,7 +238,9 @@ Public configuration, timeline summary, and status. Never includes mandates, pri
 }
 ```
 
-`state` values: `draft`, `validated`, `preparing`, `running`, `paused`, `recovery_required`, `terminal`, `failed_setup`. `state_cause` is a short string. Since stage 2.4: `start` or `step` on `preparing`, the mode setup was started in; `step` while a requested step is under way and `step_complete` after it; `session_open` for a run whose setup was carried on and which waits to be resumed; `operator_pause`; `reorg`; `recovered`; `validation_failed`; when a run ends after its session was ended early, the termination's cause — `abort_requested`, `model_failure`, `budget_exhausted`, `execution_failure`, `session_deadline` or `session_refused` ([ADR-066](decision_log.md), [ADR-068](decision_log.md)) — whatever fault crossed it; on `failed_setup`, also `<kind>_reverted` for a setup transaction that reverted (`mint_reverted`, `fund_eth_reverted`, `approve_reverted`, `create_session_reverted`); and on `recovery_required`, the fault — `rpc_timeout`, `agent_unavailable`, `observation_inconsistent`, `nonce_conflict`, `unreachable`, `refused`, `settlement_check_failed`, `termination_reverted`, `internal_error`, an indexer problem's code, `agent_<code>` for an agent refusal, or `observation_<code>` for an observation the backend could not build ([ADR-063](decision_log.md), [ADR-064](decision_log.md)). [runbook.md](runbook.md) section 6 says what each asks of an operator.
+Each party's `balances` are its latest canonical snapshot, and `"0"` before setup's: a fresh wallet holds nothing until start funds it. `current_action` comes from the party's open turn — `deciding` while it is observed, decided or repaired, `signing`, then `awaiting_confirmation` while its action is broadcast and confirmed — and is `idle` otherwise; `decision_status` is the party's latest turn's state. The `metrics` strip's `gas_used` and `fee_wei` include setup's; `GET /metrics` and the export keep them apart. `mode` is `live`, or `fixture` for a run on canned model responses.
+
+`state` values: `draft`, `validated`, `preparing`, `running`, `paused`, `recovery_required`, `terminal`, `failed_setup`. `state_cause` is a short string. Since stage 2.4: `start` or `step` on `preparing`, the mode setup was started in; `step` while a requested step is under way and `step_complete` after it; `session_open` for a run whose setup was carried on and which waits to be resumed; `operator_pause`; `reorg`; `recovered`; `validation_failed`; when a run ends after its session was ended early, the termination's cause — `abort_requested`, `model_failure`, `budget_exhausted`, `execution_failure`, `session_deadline` or `session_refused` ([ADR-066](decision_log.md), [ADR-068](decision_log.md)) — whatever fault crossed it; on `failed_setup`, also `<kind>_reverted` for a setup transaction that reverted (`mint_reverted`, `fund_eth_reverted`, `approve_reverted`, `create_session_reverted`); and on `recovery_required`, the fault — `rpc_timeout`, `agent_unavailable`, `observation_inconsistent`, `nonce_conflict`, `unreachable`, `refused`, `settlement_check_failed`, `termination_reverted`, `internal_error`, `chain_unavailable` for a run whose chain went away — stranded at start-up by a backend serving another ([ADR-081](decision_log.md)) — an indexer problem's code, `agent_<code>` for an agent refusal, or `observation_<code>` for an observation the backend could not build ([ADR-063](decision_log.md), [ADR-064](decision_log.md)). [runbook.md](runbook.md) section 6 says what each asks of an operator.
 
 #### `POST /v1/runs/{run_id}/validate`
 
@@ -289,6 +306,8 @@ Creates a fresh run in `draft` with specified changes. The body is a JSON merge 
 { "name": "Infeasible clone", "seller": { "mandate": { "reservation_price_minor": "105000000" } } }
 ```
 
+The merge patch is RFC 7386: an object merges member by member and `null` removes a member, so `{"limits": null}` is a request without limits, refused `422`. The result is parsed exactly as a `POST /v1/runs` body is. `parent_run_id` is set to the parent and a patch naming it is `422`. Each mandate's `version` is one past the parent's, and both agents provision the clone afresh, so its wallets are new (ADR-039). Since stage 2.5.
+
 #### `GET /v1/runs/{run_id}/mandates`
 
 Observer-only private view. Requires `X-Observer-Reveal: true`.
@@ -321,6 +340,7 @@ Private operational records. Requires `X-Observer-Reveal: true`.
       "usage": { "input_tokens": 1450, "output_tokens": 60, "cache_read_input_tokens": 1200 },
       "cost_estimated_usd": "0.02", "cost_reported_usd": null,
       "latency_ms": 3120, "requested_at": "…",
+      "status": "invalid", "request_hash": null,
       "authorized": false,
       "label": "private_operational_record_not_an_authorized_offer"
     }
@@ -336,13 +356,32 @@ Server-sent events. Supports `Last-Event-ID` for replay from a cursor. `Content-
 
 Returns the complete public run resource plus the ordered list of timeline frames the UI steps through. `mode` is `replay`. Zero model calls, zero transactions.
 
+**Not served yet**: the frame shape is designed with the replay interface that steps through it, in stage 4 ([ADR-074](decision_log.md)). The export below carries everything a replay is built from.
+
 #### `GET /v1/runs/{run_id}/export`
 
-Query: `include_private=true` requires `X-Observer-Reveal: true`. Returns the evidence export document (section 5) as `application/json` with `Content-Disposition: attachment`.
+Query: `include_private=true` requires `X-Observer-Reveal: true`. Returns the evidence export document (section 5) as `application/json` with `Content-Disposition: attachment; filename="run-<run id>.export.json"`. The run's metrics are recomputed first.
 
 #### `GET /v1/runs/{run_id}/metrics`
 
-Per-run metrics per spec 11.2, plus the RPC request count by method and estimated RPC cost of [ADR-061](decision_log.md). Reservation utilities require private inputs and are included only with `X-Observer-Reveal: true`; otherwise those fields are `null`. `rpc_cost_estimated_usd` is `null` — displayed as unknown, never zero — when the RPC price table has no entry for the deployment's provider.
+Per-run metrics per spec 11.2, plus the RPC request count by method and estimated RPC cost of [ADR-061](decision_log.md), recomputed when asked. Reservation utilities require private inputs and are included only with `X-Observer-Reveal: true`; otherwise those fields are `null`. `rpc_cost_estimated_usd` is `null` — displayed as unknown, never zero — when the RPC price table has no entry for the deployment's provider.
+
+```json
+{
+  "run_id": "…",
+  "recorded_offers": 5, "decision_time_ms": 42, "chain_wait_ms": 6100, "setup_chain_wait_ms": 4100,
+  "model_calls": 0, "input_tokens": 0, "output_tokens": 0,
+  "model_cost_estimated_usd": "0.000000", "model_cost_reported_usd": "0.000000",
+  "gas_used_negotiation": "412000", "gas_used_setup": "380000", "fee_wei_negotiation": "…", "fee_wei_setup": "…",
+  "settled_quote_minor": "93333333", "mandate_violations": 0, "failure_class": "none", "audit_complete": true,
+  "rpc_requests": 184, "rpc_requests_by_method": { "eth_getLogs": 40, "…": 0 }, "rpc_cost_estimated_usd": "0.000000",
+  "rpc_price_last_verified": "2026-10-02",
+  "buyer_utility_minor": "6666667" | null, "seller_utility_minor": "3333333" | null, "captured_surplus_minor": "10000000" | null,
+  "feasible": true | null, "feasible_surplus_minor": "10000000" | null, "efficiency_ratio": "1.000000" | null
+}
+```
+
+The definitions are [data_model.md](data_model.md) section 3.13's. `rpc_price_last_verified` is the price table entry's date, shown beside the estimate, and null when the table does not price the provider. `efficiency_ratio` is the captured surplus over the feasible surplus, and null — undefined — when the feasible surplus is zero (spec 11.2). A model cost is `"0.000000"` for a run that called no model, and null when a call's price is unknown.
 
 ### 2.3 Batches (local profile only)
 
@@ -378,7 +417,7 @@ Returns the operation record. Clients poll or, preferably, watch the run's SSE s
 
 ## 3. Server-sent events
 
-Each event: `id: <cursor>` (monotonic integer per run), `event: <type>`, `data: <json>`. A `: keepalive` comment every 15 s. Reconnect with `Last-Event-ID` replays every event after that cursor from `run_events`.
+Each event: `id: <cursor>` (monotonic integer per run), `event: <type>`, `data: <json>`. A `: keepalive` comment every 15 s without an event. Reconnect with `Last-Event-ID` replays every event after that cursor from `run_events`; a `Last-Event-ID` that is not an integer from 0 to 2^63 − 1 is `400 bad_request`, and an unknown run `404`. When the backend begins to shut down every stream ends, and the client reconnects to whichever process serves next ([ADR-082](decision_log.md)). Only the event types in this table are ever sent: a `run_events` row of any other type is skipped (stage 2.5).
 
 | Event type | Data | When |
 |---|---|---|
@@ -390,8 +429,8 @@ Each event: `id: <cursor>` (monotonic integer per run), `event: <type>`, `data: 
 | `chain.event` | timeline entry (section 2.2) | canonical event indexed, or an execution failure recorded |
 | `chain.reorg` | `{ from_block, to_block, invalidated_digests: [] }` | reorg detected; appended by the indexer in the same transaction as the rewind ([ADR-058](decision_log.md)) |
 | `balances` | `{ stage, buyer: { base_minor, quote_minor, eth_wei }, seller: {…}, block_number }` | snapshot taken: `pre_setup` and `post_setup` during setup, the terminal stages when the outcome is recorded |
-| `metrics` | run metrics object | after each turn |
-| `operation` | operation record | operation status change |
+| `metrics` | the run resource's metric strip (section 2.2) | after each turn, and when the run ends |
+| `operation` | operation record | operation status change (section 1.2) |
 | `notice` | `{ level, message }` | operator-facing notices such as "Paused; offer and session expiry continue." |
 
 Never emitted on SSE: mandates, raw model responses, validation feedback, prompts, keys.
@@ -461,7 +500,9 @@ Top-level:
 }
 ```
 
-With `include_private=true`, `private` contains `mandate_versions`, full `decisions` including raw responses and validation feedback, observations, and the evaluator's feasibility result. Credentials and private keys are never exported under any option.
+With `include_private=true`, `private` contains `mandates` (both, as `mandate.v1.json` shapes them), `decisions` — every attempt in full, raw responses and validation feedback included, as `GET /decisions` gives them — `observations`, each as its own agent was sent it, and the evaluator's feasibility result. Credentials and private keys are never exported under any option.
+
+`metrics` carries `rpc_requests`, `rpc_requests_by_method` and `rpc_cost_estimated_usd` ([ADR-061](decision_log.md)); the method map's keys are pinned to JSON-RPC namespaces and its values to counts. `failure_class` is null while the run goes on. `signed_actions[].tx_hash` is the transaction that carried the action — the mined one, else the one still live — and `chain_events` and `balance_snapshots` include rows a reorg invalidated, with `canonical: false`.
 
 ---
 
@@ -584,13 +625,13 @@ Called after the run reaches a terminal state. The body is empty or `{}`. The se
 
 | HTTP | `code` | Meaning |
 |---|---|---|
-| 400 | `bad_request` | Malformed JSON or headers |
+| 400 | `bad_request` | Malformed JSON or headers: an `Idempotency-Key` that is not a UUID, a `Last-Event-ID` that is not a cursor, a list `cursor` this API did not issue |
 | 401 | `unauthorized` | Missing or invalid operator token or agent HMAC |
 | 403 | `reveal_required` | Private route without `X-Observer-Reveal: true` |
 | 404 | `not_found` | Unknown run, batch, operation, scenario, deployment |
 | 405 | `method_not_allowed` | Agent internal API: a method the route does not serve |
 | 409 | `idempotency_conflict` | Same key, different body |
-| 409 | `invalid_state` | Action not allowed in current run state; `details.state` and `details.allowed_from` |
+| 409 | `invalid_state` | Action not allowed in current run state; `details.state` and `details.allowed_from`; `details.termination` while a termination is recorded; `details.deployment` for a run on a deployment this backend does not serve |
 | 409 | `turn_in_progress` | Step or start while a turn is running |
 | 409 | `another_run_active` | A different run holds the lease |
 | 409 | `mandate_immutable` | Attempt to change a mandate after start |
@@ -602,7 +643,7 @@ Called after the run reaches a terminal state. The body is empty or `{}`. The se
 | 422 | `observation_inconsistent` | Agent service: the observation contradicts itself or the approved session; the controller rebuilds it and retries ([ADR-046](decision_log.md)) |
 | 422 | `deployment_mismatch` | Chain ID or code hash differs from manifest |
 | 503 | `dependency_unavailable` | RPC, database, agent service, or model provider down; an agent service whose signer did not load, with `details.dependency = "signer"` |
-| 500 | `internal_error` | Unhandled; `request_id` for correlation |
+| 500 | `internal_error` | Unhandled; `request_id` for correlation, also in the `X-Request-Id` header. Its log line names the exception's type and frames, never its message |
 
 Contract reverts are surfaced as `tx.status = reverted` with `revert_error` set to the decoded custom error name from [protocol.md](protocol.md) section 8.3, never as an HTTP error.
 
@@ -610,6 +651,6 @@ Contract reverts are surfaced as `tx.status = reverted` with `revert_error` set 
 
 ## 8. Contract change control
 
-- Any change to this document requires a matching change to the OpenAPI snapshot test in `services/api/tests/contract/` and the generated TypeScript client.
+- Any change to this document requires a matching change to the OpenAPI snapshot test in `services/api/tests/contract/` and the generated TypeScript client. The test compares the generated document with `openapi.snapshot.json` and the served routes with the headings of section 2, less the routes it defers (the batches, stage 6; replay, stage 4); `make openapi` rewrites the snapshot after an intended change. The TypeScript client is generated from it in stage 4.
 - Field additions are allowed in a minor version. Renames, removals, type changes, and enum removals require a new `/v2` prefix or an explicit decision-log entry approving a breaking change before release.
 - The agent internal API is versioned with the backend and is not a public contract; both sides deploy together.

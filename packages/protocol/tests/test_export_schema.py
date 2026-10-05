@@ -164,6 +164,8 @@ def valid_export() -> dict[str, Any]:
                 "model_cost_reported_usd": None,
                 "gas_used": 412000,
                 "fee_wei": "412000000000000",
+                "rpc_requests": 184,
+                "rpc_cost_estimated_usd": "0.000000",
             },
             "labels": {
                 "test_assets": True,
@@ -265,6 +267,9 @@ def valid_export() -> dict[str, Any]:
             "mandate_violations": 0,
             "failure_class": "none",
             "audit_complete": True,
+            "rpc_requests": 184,
+            "rpc_requests_by_method": {"eth_getLogs": 40, "eth_getBlockByNumber": 144},
+            "rpc_cost_estimated_usd": "0.000000",
         },
         "private": None,
     }
@@ -425,6 +430,20 @@ class TestExport:
             ),
             ("unknown event name", lambda d: d["chain_events"][0].update({"event": "Transfer"})),
             ("wrong export version", lambda d: d.update({"export_version": "2"})),
+            # ADR-061's RPC figures: counts by method name, and a cost that is a USD string or
+            # unknown, never a number.
+            (
+                "a mandate riding in the RPC counts",
+                lambda d: d["metrics"]["rpc_requests_by_method"].update(
+                    {"reservation_price_minor": 100000000}
+                ),
+            ),
+            (
+                "text in the RPC counts",
+                lambda d: d["metrics"]["rpc_requests_by_method"].update({"eth_call": "ninety"}),
+            ),
+            ("RPC cost as a number", lambda d: d["metrics"].update({"rpc_cost_estimated_usd": 0})),
+            ("missing RPC count", lambda d: d["run"]["metrics"].pop("rpc_requests")),
         ],
     )
     def test_a_leaking_or_malformed_export_is_refused(self, case: str, mutate: Any) -> None:
@@ -522,6 +541,14 @@ class TestExport:
         }
         document["reproducibility"]["policy_versions"] = {"buyer": "det-1", "seller": None}
 
+        validate(document, "export.v1.json")
+
+    def test_unknown_figures_are_null(self) -> None:
+        """A run still going has no failure class; an unpriced provider no RPC cost (ADR-061)."""
+        document = valid_export()
+        document["metrics"]["failure_class"] = None
+        document["metrics"]["rpc_cost_estimated_usd"] = None
+        document["run"]["metrics"]["rpc_cost_estimated_usd"] = None
         validate(document, "export.v1.json")
 
     def test_the_embedded_manifest_is_validated_through_the_reference(self) -> None:
