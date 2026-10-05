@@ -737,9 +737,10 @@ by an abort from a recovery.
 **Status: complete, 2 October 2026**, on branch `feature/operator-api`, cut from `main` after 2.4
 merged, in one pass at the product owner's direction (Q53). Every deliverable below is done and
 `make ci` is green: 1,530 Python tests (155 of them new since 2.4, 48 of those from the adversarial
-review below), 115 Foundry tests, 31 Vitest tests, the backend at 96.8 percent of lines, the agent's validator and signer still at 100 percent of
-branches, and all six import contracts kept. As with the earlier sub-stages, the pipeline itself has not yet
-run this branch on GitHub.
+review below), 115 Foundry tests, 31 Vitest tests, the backend at 96.8 percent of lines, the
+agent's validator and signer still at 100 percent of branches, and all six import contracts kept. The pipeline's run of the pull request failed two
+stage 2.3 tests on a timing race and the pull request was merged before that was seen; the same tree
+passed on `main`, and the race is fixed (below).
 
 Nine questions the build raised went to the product owner and were answered on 2 October 2026:
 build it in one pass (Q53); an operation records how the run's transition ended, not only that it
@@ -855,8 +856,18 @@ its own and the test aimed at it shown to fail — 31 of them, all killed. The o
   none of the backend's tuning variables; an unhandled `500` carried no request id. The figures the
   product owner decided anew: utilities against ADR-045's caps (ADR-083), two indexer problems
   classed `execution`, cached input tokens counted (ADR-079 and 080 as amended).
-- **Not reached, still**: Sepolia, a GitHub run of the pipeline, a real restart with an operation in
-  flight across containers, and the 96.2 percent coverage figure from a slot.
+- **Not reached, still**: Sepolia, a real restart with an operation in flight across containers, and
+  the 96.2 percent coverage figure from a slot.
+
+**The pipeline's first run of this stage failed, and the pull request was merged regardless.** On
+pull request #8 the Python job failed two stage 2.3 tests, `test_a_broadcast_lost_to_an_rpc_timeout…`
+and `test_a_session_whose_opening_was_never_seen…`; the same tree passed on `main` after the merge.
+Both checked the chain the moment a transaction was sent, and Anvil's automine can mine it a moment
+after `send_raw` returns — the race the stage 2.3 CI failure had already met, fixed then in
+`Backend.poll` and nowhere else. `AnvilChain.transactions_from` and a new `Backend.mined` now wait
+for the pool to drain, and the two tests and one more of the same shape in `test_chain_faults.py`
+use them (`fix/chain-test-pool-race`). The lesson is the one docs/contributing.md section 4 already
+states: merge only on a green pipeline, and read the checks before merging.
 
 **Exit condition:** the stage 2 exit condition above, met through the HTTP API.
 
