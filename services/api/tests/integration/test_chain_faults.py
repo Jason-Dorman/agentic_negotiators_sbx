@@ -422,6 +422,7 @@ async def test_a_receipt_mined_after_the_poll_read_its_head_waits_for_the_next_p
 ) -> None:
     """A poll describes the chain at the head it read: nothing above it is recorded at depth 0."""
     session = await backend.open_session()
+    await backend.mined()
     lagging = Backend(backend.database, chain, adapter=HeadOneBehind(chain.rpc_url))
     report = await lagging.indexer.poll()  # the opening's block is one above the head it read
     assert [row for row in report.included if row.run_id == session.run_id] == []

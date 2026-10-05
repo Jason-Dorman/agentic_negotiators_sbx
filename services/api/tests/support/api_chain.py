@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -172,8 +173,23 @@ class AnvilChain:
     def block_hash(self, number: int) -> str:
         return "0x" + bytes(self.w3.eth.get_block(number)["hash"]).hex()
 
+    def wait_for_pool(self) -> None:
+        """Until automine has mined what was sent. Anvil can mine a transaction a moment after
+        `send_raw` returns (the stage 2.3 CI failure, met again in stage 2.5's), so a check of
+        what is mined must wait for the pool to drain. With automine off a test holds
+        transactions in the pool on purpose, and nothing waits."""
+        if not self.automining:
+            return
+        for _ in range(200):
+            if self.pooled() == 0:
+                return
+            time.sleep(0.025)
+        raise AssertionError("automine left transactions in the pool for 5 s")
+
     def transactions_from(self, address: str, from_block: int) -> list[str]:
-        """Every mined transaction sent by `address` at or above a height."""
+        """Every mined transaction sent by `address` at or above a height, once the pool is
+        drained."""
+        self.wait_for_pool()
         hashes = []
         for number in range(from_block, self.head() + 1):
             block = self.w3.eth.get_block(number, full_transactions=True)
@@ -385,14 +401,18 @@ class Backend:
         and then polls once means "after it is mined". With automine off, a test holds
         transactions in the pool on purpose, and nothing waits.
         """
+        await self.mined()
+        return await self.indexer.poll()
+
+    async def mined(self) -> None:
+        """Until automine has mined what was sent: before a poll of an indexer other than this
+        harness's own, which `poll` does not wait for."""
         if self.chain.automining:
             for _ in range(200):
                 if self.chain.pooled() == 0:
-                    break
+                    return
                 await asyncio.sleep(0.025)
-            else:
-                raise AssertionError("automine left transactions in the pool for 5 s")
-        return await self.indexer.poll()
+            raise AssertionError("automine left transactions in the pool for 5 s")
 
     async def project(self, session: Session) -> RunProjection:
         return await self.projector.project(session.run_id)

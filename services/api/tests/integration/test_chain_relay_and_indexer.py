@@ -353,6 +353,7 @@ async def test_a_session_whose_opening_was_never_seen_is_recorded_without_senten
     await backend.act(
         session, session.offer(session.buyer, 1, 80_000_000, chain.chain_time() + 600)
     )
+    await backend.mined()
     report = await late.poll()
     (offer,) = [event for event in report.indexed if event.run_id == session.run_id]
     assert offer.event_name == "OfferRecorded"
