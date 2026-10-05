@@ -159,6 +159,7 @@ class Relay:
         codec: ExchangeCodec,
         *,
         chain_id: int,
+        deployment_id: str,
         relay_signer: TransactionSigner,
         holder: str,
         policy: RelayPolicy,
@@ -169,6 +170,8 @@ class Relay:
         self._chain = chain
         self._codec = codec
         self._chain_id = chain_id
+        #: ADR-081: the recorded nonces that matter are this deployment's runs' alone.
+        self._deployment_id = deployment_id
         self._relay = relay_signer
         self._operator = operator_signer
         self._holder = holder
@@ -325,7 +328,7 @@ class Relay:
     ) -> int:
         if signer.address == self._relay.address:
             return await uow.leases.take_relay_nonce(run_id, self._holder, chain_nonce)
-        recorded = await uow.outbox.max_nonce(signer.address)
+        recorded = await uow.outbox.max_nonce(signer.address, self._deployment_id)
         return chain_nonce if recorded is None else max(chain_nonce, recorded + 1)
 
     # -----------------------------------------------------------------------------------------
@@ -428,7 +431,7 @@ class Relay:
 
     async def _nonce_consumed(self, row: OutboxRecord) -> Reconciliation:
         async with self._transactions.unit_of_work() as uow:
-            group = await uow.outbox.nonce_group(row.sender, row.nonce)
+            group = await uow.outbox.nonce_group(row.sender, row.nonce, self._deployment_id)
         for sibling in group:
             if sibling.id != row.id and await self._chain.receipt(sibling.tx_hash) is not None:
                 async with self._transactions.unit_of_work() as uow:

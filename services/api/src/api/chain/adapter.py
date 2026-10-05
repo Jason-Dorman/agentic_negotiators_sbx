@@ -24,6 +24,9 @@ block", which the indexer took for a reorg.
 web3's own retries are switched off (ADR-060): the relay and the indexer already recover by looking
 up before they act, and a retry layer beneath them made `RPC_TIMEOUT_S` about five times longer than
 its name says.
+
+Given an `RpcCounter`, the adapter counts every JSON-RPC request as its provider encodes it, by
+method (ADR-061, `counting.py`).
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ from collections.abc import Callable
 from typing import Any, Final, Protocol, cast
 
 from eth_typing import HexStr
-from web3 import Web3
+from web3 import HTTPProvider, Web3
 from web3.exceptions import (
     BadResponseFormat,
     BlockNotFound,
@@ -43,8 +46,9 @@ from web3.exceptions import (
     TransactionNotFound,
     Web3RPCError,
 )
-from web3.types import TxParams
+from web3.types import RPCEndpoint, TxParams
 
+from api.chain.counting import RpcCounter
 from api.chain.errors import ExecutionRevertedError, RpcUnavailableError, TransactionRejectedError
 from api.chain.types import BlockRef, CallRequest, FeeQuote, RawLog, Receipt, TransactionView
 from negotiation_protocol import Address, Digest
@@ -108,10 +112,31 @@ def _optional_address(value: Any) -> Address | None:
     return None if value is None else Address(str(value))
 
 
+class _CountingProvider(HTTPProvider):
+    """Counts each request as it is encoded for the wire: after web3's request cache, so exactly
+    the requests the RPC receives, failed ones included."""
+
+    def __init__(self, rpc_url: str, counter: RpcCounter, **kwargs: Any) -> None:
+        super().__init__(rpc_url, **kwargs)
+        self._counter = counter
+
+    def encode_rpc_request(self, method: RPCEndpoint, params: Any) -> bytes:
+        self._counter.record(str(method))
+        return super().encode_rpc_request(method, params)
+
+
 class Web3ChainAdapter(ChainAdapter):
-    def __init__(self, rpc_url: str, *, timeout_s: float = 10.0) -> None:
-        provider = Web3.HTTPProvider(
-            rpc_url, request_kwargs={"timeout": timeout_s}, exception_retry_configuration=None
+    def __init__(
+        self, rpc_url: str, *, timeout_s: float = 10.0, counter: RpcCounter | None = None
+    ) -> None:
+        options: dict[str, Any] = {
+            "request_kwargs": {"timeout": timeout_s},
+            "exception_retry_configuration": None,
+        }
+        provider = (
+            HTTPProvider(rpc_url, **options)
+            if counter is None
+            else _CountingProvider(rpc_url, counter, **options)
         )
         self._w3 = Web3(provider)
 

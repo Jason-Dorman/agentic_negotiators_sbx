@@ -99,11 +99,25 @@ def migrated_url(pg_url: str) -> Iterator[str]:
     asyncio.run(_reset_schema(pg_url))
     upgrade(pg_url)
     yield pg_url
+    # The last test's rows go first: a downgrade narrows constraints — migration 0004's deployment
+    # uniqueness among them — that rows written under the wider ones need not satisfy.
+    asyncio.run(_truncate(pg_url))
     downgrade(pg_url)
 
 
 #: Every table the models declare, children first, for TRUNCATE.
 ALL_TABLES = [table.name for table in reversed(Base.metadata.sorted_tables)]
+
+
+async def _truncate(url: str) -> None:
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(f"TRUNCATE {', '.join(ALL_TABLES)} RESTART IDENTITY CASCADE")
+            )
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture

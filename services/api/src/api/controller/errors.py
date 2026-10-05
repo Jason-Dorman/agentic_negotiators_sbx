@@ -37,6 +37,7 @@ class InvalidStateError(ControllerError):
         allowed_from: Collection[RunState],
         *,
         termination: str | None = None,
+        deployment: str | None = None,
     ) -> None:
         details: dict[str, Any] = {
             "state": state.value,
@@ -47,6 +48,10 @@ class InvalidStateError(ControllerError):
             # ADR-070: the session is being ended, whatever state the run shows meanwhile.
             details["termination"] = termination
             message = f"{operation} is not allowed while the run's session is being ended"
+        if deployment is not None:
+            # ADR-081: the run belongs to a chain this backend does not serve.
+            details["deployment"] = deployment
+            message = f"{operation} is not allowed: the run is on deployment {deployment}"
         super().__init__(message, details)
 
 

@@ -426,11 +426,14 @@ class TestOutbox:
         run = await seed.run()
         sender = fresh_address()
         async with database.unit_of_work() as uow:
-            assert await uow.outbox.max_nonce(sender) is None
+            deployment = run.run.deployment_id
+            assert await uow.outbox.max_nonce(sender, deployment) is None
             for nonce in (0, 2, 1):
                 await seed.outbox_tx(uow, run.id, sender=sender, nonce=nonce)
             await seed.outbox_tx(uow, run.id, sender=fresh_address(), nonce=40)
-            assert await uow.outbox.max_nonce(sender) == 2
+            assert await uow.outbox.max_nonce(sender, deployment) == 2
+            # ADR-081: another deployment's history does not count.
+            assert await uow.outbox.max_nonce(sender, "elsewhere") is None
             assert len(await uow.outbox.list_for_run(run.id)) == 4
             assert await uow.outbox.get(uuid.uuid4()) is None
             assert await uow.outbox.get_by_hash(fresh_digest()) is None
@@ -588,6 +591,74 @@ class TestMetricsEventsAndOperations:
         # A utility is signed: a mandate violation makes it negative.
         assert stored.buyer_utility_minor == -1
         assert stored.gas_used_setup == 0 and type(stored.gas_used_setup) is MinorAmount
+
+    async def test_rpc_counts_accumulate_and_a_recomputation_never_overwrites_them(
+        self, database: Database, seed: Seeder
+    ) -> None:
+        """ADR-061: only `add_rpc_requests` writes the counts, so a recomputation that read them a
+        moment before more were added cannot write the smaller figure back."""
+        run = await seed.run()
+        async with database.unit_of_work() as uow:
+            await uow.metrics.add_rpc_requests(run.id, {"eth_getLogs": 2}, now())
+            await uow.metrics.add_rpc_requests(run.id, {"eth_getLogs": 1, "eth_call": 4}, now())
+            await uow.metrics.upsert(
+                RunMetricsRecord(run_id=run.id, computed_at=now(), recorded_offers=3)
+            )
+            stored = await uow.metrics.get(run.id)
+        assert stored is not None
+        assert stored.recorded_offers == 3
+        assert stored.rpc_requests == 7
+        assert stored.rpc_requests_by_method == {"eth_getLogs": 3, "eth_call": 4}
+
+    async def test_the_last_cursor_overall_and_before_a_moment(
+        self, database: Database, seed: Seeder
+    ) -> None:
+        run = await seed.run()
+        async with database.unit_of_work() as uow:
+            assert await uow.run_events.last_cursor(run.id) == 0
+            first = await uow.run_events.append(run.id, "run.state", {})
+        async with database.unit_of_work() as uow:
+            await uow.run_events.append(run.id, "run.state", {})
+            assert await uow.run_events.last_cursor(run.id) == 2
+            assert await uow.run_events.last_cursor(run.id, first.created_at) == 0
+            later = first.created_at + timedelta(microseconds=1)
+            assert await uow.run_events.last_cursor(run.id, later) == 1
+
+    async def test_runs_page_newest_first_with_filters(
+        self, database: Database, seed: Seeder
+    ) -> None:
+        runs = [await seed.run(name=f"run {n}") for n in range(3)]
+        async with database.unit_of_work() as uow:
+            page = await uow.runs.list_page(limit=2)
+            rest = await uow.runs.list_page(limit=2, before=(page[-1].created_at, page[-1].id))
+            drafts = await uow.runs.list_page(limit=10, state=RunState.DRAFT)
+            settled = await uow.runs.list_page(limit=10, outcome=OutcomeKind.SETTLED)
+        assert [r.id for r in page + rest] == [r.id for r in reversed(runs)]
+        assert len(drafts) == 3 and settled == []
+
+    async def test_an_operations_key_can_be_released_and_taken_again(
+        self, database: Database, seed: Seeder
+    ) -> None:
+        run = await seed.run()
+        key = str(uuid.uuid4())
+        new = NewOperation(
+            kind="start_run",
+            route="POST /x",
+            request_hash="0x1",
+            run_id=run.id,
+            idempotency_key=key,
+        )
+        async with database.unit_of_work() as uow:
+            first = await uow.operations.create(new)
+            assert [op.id for op in await uow.operations.unfinished()] == [first.id]
+            released = await uow.operations.release_key(first.id)
+            again = await uow.operations.create(new)
+            await uow.operations.update(again.id, OperationStatus.SUCCEEDED, result={})
+            unfinished = await uow.operations.unfinished()
+            found = await uow.operations.get_by_key("POST /x", key)
+        assert released.idempotency_key is None
+        assert found is not None and found.id == again.id
+        assert [op.id for op in unfinished] == [first.id]
 
     async def test_run_event_cursors_are_per_run_and_gapless(
         self, database: Database, seed: Seeder

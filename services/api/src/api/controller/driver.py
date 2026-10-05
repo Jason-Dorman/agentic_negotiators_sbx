@@ -34,6 +34,11 @@ never left `running` with nothing driving it.
 
 Every state change goes through `RunStates.move`, which checks architecture 6.1 under the run's row
 lock and appends the `run.state` event in the same unit of work.
+
+Every RPC request made while driving a run — a tick, and the reconciliation and poll an operator's
+resume runs — is attributed to that run, the one holding the lease, and the counts are added to its
+`run_metrics` as each finishes (ADR-061). The metrics themselves are recomputed after each turn and
+when the run ends, through the `RunMetricsSink` the composition root hands the driver.
 """
 
 from __future__ import annotations
@@ -41,17 +46,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Final
+from typing import Final, Protocol
 
 import structlog
 
-from api.chain import ChainAdapter, ExchangeCodec, RpcUnavailableError
+from api.chain import ChainAdapter, ExchangeCodec, RpcCounter, RpcUnavailableError
 from api.config import ControllerPolicy, confirmation_threshold
 from api.controller import events
-from api.controller.errors import InvalidStateError
+from api.controller.errors import InvalidStateError, TurnInProgressError
 from api.controller.setup import SessionSetup, SetupStatus, SetupStep
 from api.controller.states import (
     ACTIVE,
@@ -100,6 +105,12 @@ _TERMINAL_STAGES: Final = frozenset(
 )
 #: The abort code for a session an agent refused during setup (ADR-066).
 EXECUTION_FAILURE: Final = 4
+
+
+class RunMetricsSink(Protocol):
+    """Recompute a run's metrics and stream them (`api.metrics.MetricsCalculator.record`)."""
+
+    async def record(self, run_id: uuid.UUID) -> None: ...
 
 
 class Progress(StrEnum):
@@ -164,6 +175,21 @@ class RunStates:
             await uow.run_events.append(run_id, "run.state", events.run_state(updated))
             return updated
 
+    async def begin_step(self, run_id: uuid.UUID) -> RunRecord:
+        """A paused run takes one turn: cause `step`, decided under the row lock, so of two steps
+        racing only one is accepted and the other is `turn_in_progress` (api_contract 2.2)."""
+        async with self._transactions.unit_of_work() as uow:
+            run = await uow.runs.get_for_update(run_id)
+            if run is None:
+                raise LookupError(f"no run {run_id}")
+            if run.state != PAUSED:
+                raise InvalidStateError("step", run.state, (PAUSED,))
+            if run.state_cause == "step":
+                raise TurnInProgressError("a turn is already running")
+            updated = await uow.runs.update_state(run_id, PAUSED, "step")
+            await uow.run_events.append(run_id, "run.state", events.run_state(updated))
+            return updated
+
     async def cause(self, run_id: uuid.UUID, cause: str) -> RunRecord:
         """A new cause for the state the run is in, whatever that is now."""
         async with self._transactions.unit_of_work() as uow:
@@ -201,10 +227,14 @@ class RunDriver:
         default_threshold: int,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        counter: RpcCounter | None = None,
+        metrics: RunMetricsSink | None = None,
     ) -> None:
         self._transactions = transactions
         self._chain = chain
         self._codec = codec
+        self._counter = counter
+        self._metrics = metrics
         self._relay = relay
         self._indexer = indexer
         self._turns = turns
@@ -265,7 +295,39 @@ class RunDriver:
                 _log.exception("run.driver_failed_to_record", run_id=str(run_id))
             return Progress.IDLE
 
+    @contextlib.asynccontextmanager
+    async def attributed(self, run_id: uuid.UUID) -> AsyncIterator[None]:
+        """Attribute the RPC requests made inside the block to the run, and add them to its
+        metrics as it ends (ADR-061). Nested blocks for the same run count once."""
+        if self._counter is None or RpcCounter.current() == run_id:
+            yield
+            return
+        with self._counter.attributed_to(run_id):
+            try:
+                yield
+            except Exception:
+                await self._add_rpc_requests(run_id)
+                raise
+        await self._add_rpc_requests(run_id)
+
+    async def _add_rpc_requests(self, run_id: uuid.UUID) -> None:
+        counts = {} if self._counter is None else self._counter.drain(run_id)
+        if counts:
+            async with self._transactions.unit_of_work() as uow:
+                await uow.metrics.add_rpc_requests(run_id, counts, self._clock())
+
+    async def _record_metrics(self, run_id: uuid.UUID) -> None:
+        """The counts made so far are added first, so the strip it streams is the run's as it
+        stands, priced on the count it shows."""
+        if self._metrics is not None:
+            await self._add_rpc_requests(run_id)
+            await self._metrics.record(run_id)
+
     async def tick(self, run_id: uuid.UUID) -> Progress:
+        async with self.attributed(run_id):
+            return await self._tick(run_id)
+
+    async def _tick(self, run_id: uuid.UUID) -> Progress:
         run = await self._load(run_id)
         if not await self.driven(run) or not await self.hold(run_id):
             return Progress.IDLE
@@ -325,6 +387,10 @@ class RunDriver:
     # -----------------------------------------------------------------------------------------
 
     async def sync(self, run: RunRecord) -> None:
+        async with self.attributed(run.id):
+            await self._sync(run)
+
+    async def _sync(self, run: RunRecord) -> None:
         report = await self._indexer.poll()
         successors = await self._relay.replace_stuck(run.id)
         await self._record_report(run, report, successors)
@@ -412,7 +478,9 @@ class RunDriver:
     async def reconcile(self, run_id: uuid.UUID) -> bool:
         """The relay's recovery for every unfinished transaction. False, with the run moved to
         `RECOVERY_REQUIRED`, when any outcome needs a person (ADR-057)."""
-        for result in await self._relay.reconcile(run_id):
+        async with self.attributed(run_id):
+            results = await self._relay.reconcile(run_id)
+        for result in results:
             if result.outcome in BAD_RECONCILIATIONS:
                 await self.states.recovery(run_id, result.outcome.value)
                 return False
@@ -486,6 +554,7 @@ class RunDriver:
             await uow.leases.release_active_run(run_id)
             await uow.leases.release(run_id, self._holder)
         await self._sessions.release(run_id)
+        await self._record_metrics(run_id)
 
     # -----------------------------------------------------------------------------------------
     # Act
@@ -532,6 +601,7 @@ class RunDriver:
         if step.status in (TurnStatus.IN_FLIGHT, TurnStatus.NOT_READY, TurnStatus.RETRY):
             return Progress.WAITING
         if step.status == TurnStatus.CONFIRMED:
+            await self._record_metrics(run.id)
             if run.state == PAUSED and run.state_cause == "step":
                 with contextlib.suppress(InvalidStateError):
                     await self.states.move(run.id, PAUSED, "step_complete", expect=(PAUSED,))
@@ -541,6 +611,7 @@ class RunDriver:
             return Progress.ADVANCED
         if step.status in _ENDINGS:
             # The executor recorded the termination in the turn's own unit of work (ADR-068).
+            await self._record_metrics(run.id)
             return Progress.ADVANCED
         return await self._fault(run, step.status == TurnStatus.AGENT_UNAVAILABLE, step.cause)
 

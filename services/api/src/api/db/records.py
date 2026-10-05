@@ -86,6 +86,8 @@ class DeploymentRecord(_FromRow):
     manifest: dict[str, Any]
     start_block: int
     deployed_at: datetime
+    #: ADR-081: block 0 of the chain the deployment was loaded against; None when unknown.
+    genesis_hash: Digest | None = None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -518,6 +520,11 @@ class RunMetricsRecord(_FromRow):
     mandate_violations: int = 0
     failure_class: str | None = None
     audit_complete: bool = False
+    #: ADR-061. The counts are accumulated by the controller as the run is driven; the metrics
+    #: calculator carries them through a recomputation and prices them.
+    rpc_requests: int = 0
+    rpc_requests_by_method: dict[str, Any] = field(default_factory=dict)
+    rpc_cost_estimated_usd: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

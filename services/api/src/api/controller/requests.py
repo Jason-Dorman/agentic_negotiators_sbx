@@ -3,8 +3,9 @@
 The route of stage 2.5 hands this to `RunController.create_run`; the controller and its tests
 build it directly. Every amount is parsed through `MinorAmount`, which matches the whole string,
 so an amount with a trailing newline — which a `jsonschema` pattern admits — is refused
-(docs/contributing.md section 3). A refusal names the field and the rule, never the value: a
-mandate is in this body.
+(docs/contributing.md section 3). Every free-text field refuses a NUL character, which PostgreSQL
+cannot store, so the refusal is the request's `422` and not the database's `500` (Q69). A refusal
+names the field and the rule, never the value: a mandate is in this body.
 """
 
 from __future__ import annotations
@@ -29,8 +30,15 @@ def _positive(value: str) -> str:
     return value
 
 
+def _text(value: str) -> str:
+    if "\x00" in value:
+        raise ValueError("must not contain a NUL character")
+    return value
+
+
 Amount = Annotated[str, AfterValidator(_amount)]
 PositiveAmount = Annotated[str, AfterValidator(_positive)]
+Text = Annotated[str, AfterValidator(_text)]
 
 
 class _Strict(BaseModel):
@@ -47,13 +55,13 @@ class Mandate(_Strict):
 
     reservation_price_minor: Amount
     min_remaining_inventory_minor: Amount
-    instructions: Annotated[str, Field(max_length=4000)]
+    instructions: Annotated[Text, Field(max_length=4000)]
 
 
 class PartyConfig(_Strict):
     policy: Literal["model", "deterministic"]
-    model_id: str | None = None
-    effort: str | None = None
+    model_id: Text | None = None
+    effort: Text | None = None
     initial_balances: Balances
     allowance_minor: Amount
     mandate: Mandate
@@ -83,9 +91,9 @@ class Limits(_Strict):
 
 
 class RunRequest(_Strict):
-    name: Annotated[str, Field(min_length=1, max_length=200)]
-    scenario_id: str | None = None
-    deployment_id: str
+    name: Annotated[Text, Field(min_length=1, max_length=200)]
+    scenario_id: Text | None = None
+    deployment_id: Text
     public_config: PublicConfig
     buyer: PartyConfig
     seller: PartyConfig

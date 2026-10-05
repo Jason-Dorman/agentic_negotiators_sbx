@@ -94,20 +94,31 @@ class SqlOutboxRepository(SqlRepository, OutboxRepository):
         )
         return [OutboxRecord.from_row(row) for row in rows]
 
-    async def nonce_group(self, sender: Address, nonce: int) -> list[OutboxRecord]:
+    async def nonce_group(
+        self, sender: Address, nonce: int, deployment_id: str
+    ) -> list[OutboxRecord]:
         rows = await self._all(
             select(OutboxTx)
-            .where(OutboxTx.sender == Address(sender), OutboxTx.nonce == nonce)
+            .join(Run, Run.id == OutboxTx.run_id)
+            .where(
+                OutboxTx.sender == Address(sender),
+                OutboxTx.nonce == nonce,
+                Run.deployment_id == deployment_id,
+            )
             .order_by(OutboxTx.created_at)
         )
         return [OutboxRecord.from_row(row) for row in rows]
 
-    async def awaiting_receipt(self) -> list[OutboxRecord]:
+    async def awaiting_receipt(self, deployment_id: str) -> list[OutboxRecord]:
         sibling = aliased(OutboxTx)
+        # ADR-081: a nonce is a nonce on one chain; another deployment's row at the same sender
+        # and nonce says nothing about this one.
+        on_this_chain = select(Run.id).where(Run.deployment_id == deployment_id)
         group_included = exists().where(
             sibling.sender == OutboxTx.sender,
             sibling.nonce == OutboxTx.nonce,
             sibling.block_number.is_not(None),
+            sibling.run_id.in_(on_this_chain),
         )
         rows = await self._all(
             select(OutboxTx)
@@ -116,31 +127,36 @@ class SqlOutboxRepository(SqlRepository, OutboxRepository):
                 OutboxTx.status.in_(AWAITING_RECEIPT_STATUSES),
                 OutboxTx.block_number.is_(None),
                 Run.state != RunState.TERMINAL,
+                Run.deployment_id == deployment_id,
                 ~group_included,
             )
             .order_by(OutboxTx.sender, OutboxTx.nonce, OutboxTx.created_at)
         )
         return [OutboxRecord.from_row(row) for row in rows]
 
-    async def with_block_from(self, from_block: int) -> list[OutboxRecord]:
+    async def with_block_from(self, from_block: int, deployment_id: str) -> list[OutboxRecord]:
         rows = await self._all(
             select(OutboxTx)
-            .where(OutboxTx.block_number >= from_block)
+            .join(Run, Run.id == OutboxTx.run_id)
+            .where(OutboxTx.block_number >= from_block, Run.deployment_id == deployment_id)
             .order_by(OutboxTx.block_number, OutboxTx.nonce)
         )
         return [OutboxRecord.from_row(row) for row in rows]
 
-    async def in_status(self, *statuses: TxStatus) -> list[OutboxRecord]:
+    async def in_status(self, *statuses: TxStatus, deployment_id: str) -> list[OutboxRecord]:
         rows = await self._all(
             select(OutboxTx)
-            .where(OutboxTx.status.in_(statuses))
+            .join(Run, Run.id == OutboxTx.run_id)
+            .where(OutboxTx.status.in_(statuses), Run.deployment_id == deployment_id)
             .order_by(OutboxTx.sender, OutboxTx.nonce, OutboxTx.created_at)
         )
         return [OutboxRecord.from_row(row) for row in rows]
 
-    async def max_nonce(self, sender: Address) -> int | None:
+    async def max_nonce(self, sender: Address, deployment_id: str) -> int | None:
         result = await self._session.execute(
-            select(func.max(OutboxTx.nonce)).where(OutboxTx.sender == Address(sender))
+            select(func.max(OutboxTx.nonce))
+            .join(Run, Run.id == OutboxTx.run_id)
+            .where(OutboxTx.sender == Address(sender), Run.deployment_id == deployment_id)
         )
         value = result.scalar_one_or_none()
         return None if value is None else int(value)

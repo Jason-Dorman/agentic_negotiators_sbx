@@ -19,7 +19,7 @@ has actually exercised; nothing is written ahead of the code that makes it true.
 | 5. Reconstructing a session from chain data | Stage 1 |
 | 6. Recovering pending transactions | Stage 2.3 (transactions); stage 2.4 (runs) |
 | 7. Funding a testnet demonstration | Stage 5 |
-| 8. Replay and export | Stages 4 and 5 |
+| 8. The whole stack, the operator API and the export | Stage 2.5; replay in stage 4 |
 
 ---
 
@@ -35,8 +35,10 @@ make ci         # every gate the build has earned so far
 make down       # stop, keeping the database
 ```
 
-`make up` is `docker compose --profile local up -d --wait`, so it returns only once both
-services report healthy. If it returns an error about a port, read section 2.
+`make up` is `docker compose --profile local up -d --wait postgres anvil`, so it returns only once
+both services report healthy, and starts nothing else: the test suites need only these two. If it
+returns an error about a port, read section 2. The whole application — the API and both agents — is
+`make stack`, in section 8.
 
 ### If a tool is "not found"
 
@@ -609,6 +611,7 @@ outcome stays `pending`, and an unresolved fault is never recorded as a no-deal 
 | `agent_<code>`, `observation_<code>` | An agent refused something the backend should never send, or the backend could not build an observation — the code says which ([ADR-064](decision_log.md)) | A defect; the turn is closed with the code as its `failure_code`. Resume once fixed, or abort |
 | `termination_reverted` | An abort or expiry reverted and the session is still open before its deadline | Look at the transaction's `last_error`. The termination stays recorded; once the deadline passes an abort sends `expireSession` |
 | `internal_error` | Something the driver did not expect; the exception is in the log line `run.driver_failed` | A defect. Resume once understood, or abort |
+| `chain_unavailable` | The run's chain went away — an Anvil restart — and a backend serving another chain stranded it at start-up ([ADR-081](decision_log.md)) | Nothing can reach its session; its outcome stays unknown and every operation on it is refused. Its records and export are kept |
 
 A run that ends `failed_setup` carries why in its cause: `<kind>_reverted` for a setup transaction that reverted (`mint_reverted`, `fund_eth_reverted`, `approve_reverted`, `create_session_reverted` — its `last_error` says why), `session_refused` for a session an agent refused ([ADR-066](decision_log.md)), or `abort_requested`.
 
@@ -687,6 +690,124 @@ dashboard (Billing Settings, as a compute-unit amount or its dollar value): usag
 nothing beyond it is charged. $5 a month is about 9.5M compute units, around 45 hours of active
 polling.
 
-## 8. Replay and export
+## 8. The whole stack, the operator API and the export
 
-Stages 4 and 5.
+Stage 2.5. Replay arrives with its interface in stage 4 ([ADR-074](decision_log.md)); the Sepolia
+profile in stage 5.
+
+### Starting it
+
+The stack needs `infra/.env` with the local profile's keys and the two agents' shared secrets
+(section 3):
+
+```sh
+cp infra/.env.example infra/.env
+uv run --group tooling python infra/scripts/generate_keys.py --profile local   # paste the output in
+python3 -c "import secrets; print(secrets.token_hex(32))"   # once for AGENT_A_SHARED_SECRET,
+python3 -c "import secrets; print(secrets.token_hex(32))"   # once for AGENT_B_SHARED_SECRET
+make stack
+```
+
+`make stack` is `docker compose --env-file infra/.env --profile local up -d --build --wait`. In
+order: PostgreSQL and Anvil; `deploy`, which funds the relay and operator from Anvil's first
+account and deploys the contracts, writing the manifest `local-compose` to the `deployments`
+volume — or does nothing when that manifest's exchange still has code ([ADR-076](decision_log.md));
+the two agents, healthy once each answers its own signed health check with its signer loaded; and
+`api`, which applies the migrations, loads the manifest, checks the RPC is its chain, loads the
+scenarios, and answers on `127.0.0.1:8000`.
+
+**After an Anvil restart.** Anvil keeps no state, so its chain is a new one, with a new genesis
+block, and `deploy` names its deployment from that block — `local-compose-<eight hex digits>` — so
+the database keeps the old deployment and its runs apart from the new ([ADR-081](decision_log.md)).
+A restart of Anvil alone is noticed by health: `rpc_ok` is false, because the genesis no longer
+matches. Run `make stack` again — `deploy` deploys to the new chain — and restart the api, which
+serves the new deployment:
+
+```sh
+make stack
+docker compose --env-file infra/.env --profile local up -d --force-recreate api
+```
+
+A run that was in flight on the old chain cannot reach its session again: at start-up the api moves
+it to `recovery_required`, cause `chain_unavailable`, its outcome left pending, and frees the
+active-run slot. Every operation on it is then refused with `details.deployment`; its rows and its
+export stay as they were. Old deployments stay listed by `GET /v1/deployments`.
+
+**Stopping it.** `docker stop` (or `make down`) ends every event stream at once and gives the api
+five seconds for anything else, inside its fifteen-second stop grace, so it releases its lease and
+the next process takes the run over without waiting ([ADR-082](decision_log.md)).
+
+```sh
+curl -s localhost:8000/v1/health | python3 -m json.tool
+docker compose --profile local logs deploy        # what the deployment did
+docker compose --profile local logs -f api        # one JSON line per request; never a body
+```
+
+| Symptom | Cause |
+|---|---|
+| `deploy` exits with `RELAY_PRIVATE_KEY is not set` | `infra/.env` lacks the keys, or `make stack` was not used, so Compose read no env file |
+| `deploy` exits with `the RPC ... did not answer` | Anvil is not up; `docker compose --profile local logs anvil` |
+| `api` exits at start-up naming the manifest or `CHAIN_RPC_URL` | the RPC is not the manifest's chain — another chain ID, no exchange code at its address, or a deployment id loaded before against another genesis. Deploy again (`make stack`), which names the new chain's deployment apart |
+| `api` exits naming `SCENARIOS_DIR` | the directory is missing, empty, or holds a file that fails `scenario.v1.json`; the message names the file and where, never what it holds |
+| an agent stays `unhealthy` | its signer did not load — a root variable unset — or its shared secret is under 32 characters; its log says which |
+| `api` restarts with `invalid controller configuration` | a variable is missing or a key was pasted where its reference belongs; the message names the variable, never the value |
+| `/v1/health` is `503` | the body says which of `rpc_ok`, `db_ok`, `agent_a_ok`, `agent_b_ok` is false |
+
+### Driving a run through the API
+
+Every `POST` may carry `Idempotency-Key: <uuid>`; a retry with the same key and body is answered
+with the first response, marked `Idempotent-Replayed: true`, and never does the work twice
+([ADR-078](decision_log.md)). With `OPERATOR_TOKEN` set, every route but health needs
+`Authorization: Bearer <token>`.
+
+```sh
+API=http://127.0.0.1:8000/v1
+# A deterministic run of the default scenario: the body of api_contract section 2.2.
+RUN=$(curl -s -X POST $API/runs -H 'Content-Type: application/json' -d @run.json \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
+curl -s -X POST $API/runs/$RUN/validate | python3 -m json.tool      # every check, passing or not
+curl -s -X POST $API/runs/$RUN/start -D - -o /dev/null | grep -i location   # 202, an operation
+curl -s $API/operations/<operation id> | python3 -m json.tool        # running, then succeeded
+curl -sN $API/runs/$RUN/events                                       # the live event stream
+curl -s $API/runs/$RUN | python3 -m json.tool                        # state, timeline, metric strip
+```
+
+`step` takes one turn and leaves the run paused; `pause`, `resume` and `abort` are as section 6
+describes. An operation records how its run's transition ended — `start` once the run is running,
+`step` once its turn is done, `abort` once the run has ended, with whether the abort or a settlement
+won ([ADR-073](decision_log.md)). A reconnecting stream sends `Last-Event-ID: <cursor>` and gets
+everything after it.
+
+### Private views
+
+`GET /runs/{id}/mandates`, `/decisions`, `/scenarios/{id}`, a private export and the utilities in
+`/metrics` need `X-Observer-Reveal: true`. Each access is logged as `observer.reveal`, with the
+route and the run and never what was shown (ADR-018). The header is friction and audit; the operator
+already holds everything.
+
+### The export
+
+```sh
+curl -s $API/runs/$RUN/export -o run.export.json                    # public: private is null
+curl -s "$API/runs/$RUN/export?include_private=true" -H 'X-Observer-Reveal: true' -o private.json
+uv run python -c "
+import json, sys
+from negotiation_protocol import validate
+validate(json.load(open(sys.argv[1])), 'export.v1.json'); print('export valid')
+" run.export.json
+```
+
+The export is the archive of record: it keeps the chain rows a reorg invalidated, marked
+`canonical: false`, and its metrics are recomputed when it is taken. To check it against the chain
+with no database at all, run the reconstruction tool (section 5) on its `run.session.session_id`
+with the manifest in its `deployment_manifest`; acceptance A15 does exactly that.
+
+### The RPC price table
+
+A run's RPC requests are counted by method while it is driven, and priced from the operator's
+table ([ADR-061](decision_log.md), [ADR-075](decision_log.md)). The packaged table,
+`services/api/src/api/config/rpc_prices.json`, prices Anvil at zero. To price a hosted provider,
+copy it, add an entry — its price per million units, the units each method costs, a default for
+unlisted methods or `null`, a `source` and a `last_verified` date — and point `RPC_PRICE_TABLE` at
+the copy and `RPC_PROVIDER` at the entry's name. A provider the table does not list, or a method it
+cannot price, shows its cost as unknown, never as zero. Stage 5 adds Sepolia's provider.

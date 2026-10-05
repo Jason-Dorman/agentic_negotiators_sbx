@@ -1,0 +1,20 @@
+# The Dockerfiles copy what they need by path; this keeps the build context small and keeps
+# secrets and local state out of it entirely (docs/security_and_trust_boundaries.md section 7).
+.git
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.import_linter_cache
+.coverage*
+infra/.env
+infra/.env.*
+infra/secrets
+contracts/out
+contracts/cache
+contracts/broadcast
+contracts/lib
+apps
+docs

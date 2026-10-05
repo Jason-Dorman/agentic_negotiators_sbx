@@ -65,10 +65,11 @@ Start at [docs/README.md](docs/README.md). The originating specification is [doc
 
 ## Getting started
 
-The contracts and the protocol package are in (stage 1). What is not in yet is anything that drives
-them: the backend, the agent services and the two policies arrive in stages 2 and 3, so there is no
-run to start from a browser. What works today is a deployable exchange, a settlement you can drive
-by hand, and a tool that reconstructs it from chain data alone.
+Stage 2 is in: the contracts, the protocol package, the two agent services with the deterministic
+policy, and the backend — run controller, relay, indexer, projection, and the operator API with its
+event stream and evidence export. Two deterministic agents can be run against each other end to end
+on the local chain through the API. What is not in yet is the model policy (stage 3) and the browser
+interface (stage 4), so a run is started with `curl`, not from a browser.
 
 Prerequisites: [uv](https://docs.astral.sh/uv/), Node 22 with Corepack, [Foundry](https://getfoundry.sh),
 Docker with Compose. Exact versions are in [ADR-033](docs/decision_log.md). `make` and the
@@ -79,11 +80,12 @@ pre-commit hooks find these themselves wherever they are installed; for your own
 make setup                  # uv sync, pnpm install, pre-commit install
 make up                     # PostgreSQL and Anvil, waits for both health checks
 make ci                     # every gate the build has earned so far
+make stack                  # the whole stack from infra/.env: contracts, both agents, the API
 make down                   # stop, keeping the database volume
 ```
 
-To see the contracts work, deploy them to the local Anvil and reconstruct a session from the chain:
-[docs/runbook.md](docs/runbook.md) sections 4 and 5.
+To drive a run through the API and export its evidence, see [docs/runbook.md](docs/runbook.md)
+section 8; to reconstruct a session from the chain alone, section 5.
 
 `make help` lists the rest. Configuration lives in `infra/.env.example`; copy it to `infra/.env`,
 which is git-ignored, when a stage needs one. The local profile runs on defaults without it.
@@ -94,9 +96,10 @@ The stack keeps to itself: its own Compose project (`agent_negotiation`), its ow
 moves the published host port; inside the network, services use `postgres:5432`. See
 [docs/runbook.md](docs/runbook.md) section 2.
 
-The operator runbook covers local startup, the ports, keys, deploying the contracts and
-reconstructing a session from chain data. Recovery, funding a testnet demonstration, replay and
-export arrive with the stages that make them true; it is completed in stage 5.
+The operator runbook covers local startup, the ports, keys, deploying the contracts, reconstructing
+a session from chain data, recovering transactions and runs, and the whole stack with its API and
+export. Funding a testnet demonstration and replay arrive with the stages that make them true; it is
+completed in stage 5.
 
 ## License
 

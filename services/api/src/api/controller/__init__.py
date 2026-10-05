@@ -6,8 +6,8 @@ Built in stage 2.4 of docs/build_plan.md. `controller.py` has the operations and
 approved session, and `states.py` the transitions as data.
 """
 
-from api.controller.controller import AgentProvisioningError, RunController
-from api.controller.driver import Outage, Progress, RunDriver, RunStates
+from api.controller.controller import AgentProvisioningError, RunController, merge_patch
+from api.controller.driver import Outage, Progress, RunDriver, RunMetricsSink, RunStates
 from api.controller.errors import (
     AnotherRunActiveError,
     ControllerError,
@@ -41,6 +41,7 @@ __all__ = [
     "Progress",
     "RunController",
     "RunDriver",
+    "RunMetricsSink",
     "RunNotFoundError",
     "RunRequest",
     "RunRequestError",
@@ -49,5 +50,6 @@ __all__ = [
     "SetupStatus",
     "TurnInProgressError",
     "allowed",
+    "merge_patch",
     "require_transition",
 ]

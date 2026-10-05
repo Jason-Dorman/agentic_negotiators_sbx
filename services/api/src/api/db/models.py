@@ -183,7 +183,9 @@ class Deployment(Base):
 
     __tablename__ = "deployments"
     __table_args__ = (
-        UniqueConstraint("chain_id", "exchange_address"),
+        # Migration 0004 (ADR-081): a chain is identified by its genesis block as well as its ID,
+        # so a restarted Anvil, with the same addresses, is a deployment of its own.
+        UniqueConstraint("chain_id", "genesis_hash", "exchange_address"),
         *_non_negative("start_block"),
     )
 
@@ -202,6 +204,7 @@ class Deployment(Base):
     manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     start_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
     deployed_at: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False)
+    genesis_hash: Mapped[Digest | None] = mapped_column(DigestType, nullable=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -695,6 +698,7 @@ class RunMetrics(Base):
             "input_tokens",
             "output_tokens",
             "mandate_violations",
+            "rpc_requests",
         ),
     )
 
@@ -730,6 +734,12 @@ class RunMetrics(Base):
     failure_class: Mapped[str | None] = mapped_column(Text, nullable=True)
     audit_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     computed_at: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False)
+    # Migration 0004 (ADR-061): the chain adapter's request counts for the run, and their price.
+    rpc_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    rpc_requests_by_method: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=_jsonb_default("{}")
+    )
+    rpc_cost_estimated_usd: Mapped[Decimal | None] = mapped_column(USD_NUMERIC, nullable=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

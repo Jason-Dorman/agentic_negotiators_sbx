@@ -135,7 +135,7 @@ ones worth remembering:
 
 ## Stage 2: Deterministic end-to-end run
 
-**Status: in progress, 25 September 2026; 2.1 to 2.4 complete.** Split into five sub-stages on 25 September 2026 at the
+**Status: complete, 2 October 2026; 2.1 to 2.5 complete.** Split into five sub-stages on 25 September 2026 at the
 product owner's direction. As one change the stage was too large to build or to review well: its
 estimate is 8 to 12 days, and this plan already names it the risk concentration, where the outbox,
 indexer, reorg and recovery bugs live. Each sub-stage is one branch and one pull request and ends in
@@ -734,18 +734,161 @@ by an abort from a recovery.
 
 ### Stage 2.5: Operator API, evidence and Compose
 
+**Status: complete, 2 October 2026**, on branch `feature/operator-api`, cut from `main` after 2.4
+merged, in one pass at the product owner's direction (Q53). Every deliverable below is done and
+`make ci` is green: 1,530 Python tests (155 of them new since 2.4, 48 of those from the adversarial
+review below), 115 Foundry tests, 31 Vitest tests, the backend at 96.8 percent of lines, the agent's validator and signer still at 100 percent of
+branches, and all six import contracts kept. As with the earlier sub-stages, the pipeline itself has not yet
+run this branch on GitHub.
+
+Nine questions the build raised went to the product owner and were answered on 2 October 2026:
+build it in one pass (Q53); an operation records how the run's transition ended, not only that it
+was accepted ([ADR-073](decision_log.md), Q54); replay waits for the interface that steps through it
+([ADR-074](decision_log.md), Q55); the RPC price table ships with Anvil alone until stage 5
+([ADR-075](decision_log.md), Q56); the Compose profile deploys the contracts with a one-shot service
+([ADR-076](decision_log.md), Q57); audit completeness is checked against the canonical events the
+indexer verified ([ADR-077](decision_log.md), Q58); an idempotency key replays only a success, is
+claimed before the work and is scoped to its path ([ADR-078](decision_log.md), Q59); chain wait runs
+to inclusion ([ADR-079](decision_log.md), Q60); and the failure classes are mapped as ADR-080 says
+(Q61).
+
 **Deliverables**
-- The operator API of [api_contract.md](api_contract.md) section 2 with idempotency keys, operation
-  records and the operator token. The batch routes arrive with the evaluator in stage 6.
-- SSE with `Last-Event-ID` replay from `run_events`.
-- `evidence`, the export document, and `metrics`, the per-run metrics of spec section 11.2 —
-  extended with the RPC request counts and estimated RPC cost of [ADR-061](decision_log.md): the
-  chain adapter's per-method counting, the RPC price table in `config`, and the migration adding
-  `rpc_requests`, `rpc_requests_by_method` and `rpc_cost_estimated_usd` to `run_metrics`.
-- The OpenAPI snapshot test of api_contract section 8.
-- Dockerfiles and the Compose services `api`, `agent-a` and `agent-b`.
+- **done** — The operator API of [api_contract.md](api_contract.md) section 2 with idempotency keys,
+  operation records and the operator token (`api.routes`), served by `python -m api` (`api.main`):
+  health, deployments, scenarios, runs and their list, validate, start, step, pause, resume, abort,
+  clone (now in the controller), the mandates and decisions behind the reveal header, the export,
+  the metrics and the operations. The batch routes arrive with the evaluator in stage 6; replay with
+  its interface in stage 4 (ADR-074).
+- **done** — SSE with `Last-Event-ID` replay from `run_events`, streaming only the contract's event
+  types, with the `metrics` event after each turn and the `operation` event at each status change.
+- **done** — `evidence`, the export document, and `metrics`, the per-run metrics of spec section
+  11.2 — extended with the RPC request counts and estimated RPC cost of [ADR-061](decision_log.md):
+  the chain adapter's per-method counting, the RPC price table in `config`, and migration 0004
+  adding `rpc_requests`, `rpc_requests_by_method` and `rpc_cost_estimated_usd` to `run_metrics`.
+  `export.v1.json` gains the three figures and a null failure class.
+- **done** — The OpenAPI snapshot test of api_contract section 8, which also holds the served
+  routes to the contract's own headings.
+- **done** — Dockerfiles and the Compose services `api`, `agent-a` and `agent-b`, with the one-shot
+  `deploy` of ADR-076 and `make stack`; the agents' health probe signs its own request.
+
+**Confirmed by mutation, not by coverage.** Thirty-eight deliberate breakages were applied one at a
+time, each run against the test aimed at it and counted only when that test *failed*, and every
+mutated file was checked afterwards to hold its original text. All thirty-eight were killed: the
+stream sending a type the contract does not list, ignoring `Last-Event-ID`, never keeping alive;
+the reveal header not required, or its access not logged; the token unchecked, or health put behind
+it; an idempotency key blind to the body, kept after a refusal, never expiring, replayed without its
+header, or claimed after the work; a step succeeding on any pause, an abort from recovery failing at
+once, recovery not a failure, no `operation` event; the default export private, an action's
+transaction the wrong one, invalidated rows hidden; RPC counts never persisted, or overwritten by a
+recomputation; metrics never recorded at all (listed here at first as "never recorded after a
+turn", which is not the edit that ran — the adversarial review below caught it); utilities shown
+without the header; a clone
+keeping version 1 or ignoring its patch; the run list skipping a row; a validation error quoting its
+input; health ignoring the agents; feasibility ignoring the buyer's capital; an acceptance never a
+violation; the audit ignoring the threshold; an operator abort a failure; the RPC cost rounding
+down, an unknown method costing nothing, requests never attributed; the logs keeping a mandate; a
+misnamed scenario loading; the agents' probe ignoring the signer. Three of them had no test to kill
+them when first listed — an unlisted event type, an abort sent from recovery, a recomputation
+overwriting counts — and their tests were written before the mutation run, as was the export's
+check after a reorg, which extends A14.
+
+**What building it found, which the next stages need.**
+
+1. **`ASGITransport` cannot read a stream.** It collects a whole response before returning one, so
+   the SSE tests serve the app under a real uvicorn server; stage 4's Playwright tests read the same
+   stream from the same kind of server.
+2. **A client that leaves cancels its stream mid-read.** The first stream stranded a pooled
+   database connection that way, visible only as a garbage-collector warning; the read is now
+   shielded.
+3. **The export schema could not describe a run still going**: `failure_class` admitted no null.
+   It does now. Stage 6's invariant checker reads exports of every run, failures included.
+4. **The schema's first pattern for RPC method names admitted `reservation_price_minor`.** It is
+   pinned to JSON-RPC namespaces now, and the leak case that showed it stays in the suite.
+5. **A count can be lost to a recomputation.** The metrics row is recomputed while the driver adds
+   to its RPC counts, so only `add_rpc_requests` writes them; a test holds the repository to it,
+   because no driven run can show the race.
+6. **A JSON body hashed raw would make the same request two.** The idempotency hash is
+   `json_sha256` of the parsed body, so key order and whitespace do not matter, and the test sends
+   the same body re-indented with its keys sorted.
+
+#### The adversarial review, 3 October 2026
+
+Six lenses over the change set — claims against reality; the routes, idempotency and operations
+under concurrency, retries and restarts; evidence and privacy; the metrics and RPC cost; the process,
+the images and Compose; and vacuity — each in its own copy of the tree with its own database, then
+two independent refutation attempts per finding, one on truth and one on impact: 36 agents in all,
+about 3.1M tokens. 63 candidates merged to 46 distinct; the 14 most severe were verified and 9
+survived both refutations; 32 were left open over the verification cap. Nine of its questions went
+to the product owner and were answered on 3 October 2026 ([ADR-081](decision_log.md) to
+[ADR-084](decision_log.md), amendments to ADR-073, 078, 079 and 080; Q62 to Q70); a tenth, a NUL in
+an agent's raw response, waits for stage 3 as [Q71](open_questions.md). Every confirmed finding is
+fixed in this change set, and so are the open ones that were defects; each fix was then undone on
+its own and the test aimed at it shown to fail — 31 of them, all killed. The ones that mattered:
+
+- **A mandate could reach the logs.** The log configuration redacted an event's fields and then
+  formatted the traceback, whose text carried what its raiser put in it: a NUL in a mandate's
+  instructions failed at the database, and both the backend's and uvicorn's error lines quoted the
+  row — the reservation price and the instructions; a scenario that failed its schema logged its
+  whole mandate on every container restart. An exception is now logged by its type, frames and
+  causes only, the event text's credential pattern scrubbed, the engine's parameters hidden, a NUL
+  refused `422` at the boundary (ADR-084), and a schema refusal names the file and where, never what.
+- **After an Anvil restart with the database kept, every run hung in `preparing`.** The relay took
+  the operator's next nonce from every chain the database had seen, and the receipt poll counted the
+  old chain's transaction at that nonce as the new one's; the deployment row was overwritten, so old
+  runs would have exported a manifest deployed after them. A deployment now carries its chain's
+  genesis hash and every cross-run read is scoped to the one served; the Compose deploy names each
+  chain's deployment apart; start-up refuses an RPC that is not the manifest's chain; a run stranded
+  on a chain that went away is `recovery_required`, cause `chain_unavailable`, and frees the active
+  run (ADR-081).
+- **Two claims in this section were false**: "no secret in logs" held only on the happy path, and
+  "metrics never recorded after a turn" named a different edit from the one that ran.
+- Smaller, each with its test: a request killed between claiming its key and answering left the key
+  held — now released after a 60 s claim timeout and at start-up, recorded `interrupted` (ADR-078 as
+  amended); a start or a step left paused by a reorg never had a verdict (ADR-073 as amended); one
+  database error killed an operation's watcher for good; two racing steps were both accepted for one
+  turn; an open event stream held a shutdown past Docker's stop grace, so the lease was never given
+  up (ADR-082); the strip streamed after a turn lagged its own RPC count; a failed setup captured a
+  null surplus where spec 11.2 says zero; a float in a clone's patch was a `500`; a `Last-Event-ID`
+  beyond `BIGINT` opened a stream that broke; decision records lacked `observation_hash`; a missing
+  scenarios directory started an empty catalogue; both agents shared one network; the deploy script
+  took an unreachable RPC for "nothing to do" and skipped funding keys changed since; Compose passed
+  none of the backend's tuning variables; an unhandled `500` carried no request id. The figures the
+  product owner decided anew: utilities against ADR-045's caps (ADR-083), two indexer problems
+  classed `execution`, cached input tokens counted (ADR-079 and 080 as amended).
+- **Not reached, still**: Sepolia, a GitHub run of the pipeline, a real restart with an operation in
+  flight across containers, and the 96.2 percent coverage figure from a slot.
 
 **Exit condition:** the stage 2 exit condition above, met through the HTTP API.
+
+**Met**, by `services/api/tests/integration/test_api_end_to_end.py`, `test_api_export.py` and the
+API suites beside them, over the real application served in-process, the real controller, relay,
+indexer and projection, PostgreSQL, Anvil and two real agent applications. Through HTTP alone, the
+deterministic pair settles at 93.333333 mUSD after 80, 108, 86.666666, 102 and 93.333333, and the
+infeasible pair closes after eight offers with `terms_unacceptable`, no token moving; each run
+leaves rows in every table it touches, `run_metrics` and `operations` included. A06, A13 and A14
+pass at run level as in 2.4, A14 now also exporting the reorged run with the removed offer
+non-canonical beside its replacement. The export of the settled run, taken over HTTP, validates
+against `export.v1.json` with `private: null`, and the reconstruction tool, reading only the chain,
+agrees with it on every action, the outcome, the balance deltas, the events and the calldata (A15).
+
+**And through the real containers.** `make stack`'s graph was brought up on a throwaway database:
+`deploy` funded the relay and operator and deployed, both agents and `api` came up healthy, and a
+deterministic run created, validated and started over HTTP against the container settled at
+93.333333 mUSD after the same five offers, its `start_run` operation `succeeded`, its export valid
+with `audit_complete` true, 469 RPC requests counted at an estimated $0.000000. `deploy` run again
+did nothing, and no line any of the four containers wrote on that happy path held a key, a root, a
+shared secret or a
+mandate value. Not reached, as in 2.4: Sepolia, and a GitHub run of the pipeline.
+
+After the adversarial review the check was run again on rebuilt images, through the case that review
+found: one run settled and a second left paused mid-session, then the Compose Anvil restarted with
+the database kept. Health went to `503` with `rpc_ok: false`; `deploy` named the new chain's
+deployment `local-compose-0f08abc0` beside the old `local-compose-70a20156`; the recreated api
+stranded the paused run as `recovery_required`, cause `chain_unavailable`, refused its resume with
+`details.deployment`, and settled a new run on the new chain; the settled run's export still
+validated, with its own manifest and `audit_complete` true. `agent-a` could not resolve `agent-b`;
+stopping the api with an event stream open took 1.2 s and left no live lease; and no line any
+container wrote, the restart's included, held a key, a root, a shared secret or a mandate value.
 
 ## Stage 3: Model decisions
 
@@ -761,7 +904,7 @@ by an abort from a recovery.
 **Deliverables**
 - Setup screen with two isolated mandate editors, validation report, controls (Validate, Start, Step, Pause, Resume, Abort, Clone).
 - Live view: agent panels, timeline with explorer links, settlement panel with before/after balances, observer reveal control, metric strip with the three cost groups of FR-U5 — model, gas and fee, and estimated RPC cost ([ADR-061](decision_log.md)) — and disclosures.
-- Replay mode and export download.
+- Replay mode and export download, and the replay route of api_contract section 2.2 with the frame shape the replay mode needs ([ADR-074](decision_log.md)).
 - Typed client generated from OpenAPI and protocol schemas.
 - Playwright E2E.
 
@@ -773,6 +916,7 @@ by an abort from a recovery.
 - Sepolia deployment with manifest committed under `docs/deployments/`.
 - Compose Sepolia profile; funding script for fresh test wallets. Keystore handling already exists from stage 0; this stage only supplies the Sepolia keystores and password.
 - `SEPOLIA_RPC_URL` from an Alchemy application created for this project alone, so rate limits and usage are attributable to it; indexer poll interval 4 s, with the throttling response recorded in the runbook.
+- Alchemy's entry in the RPC price table — its price per million compute units and the units of each method the backend calls, with the date they were checked — so a Sepolia run's RPC cost is an estimate rather than unknown ([ADR-075](decision_log.md)).
 - Runbook completed: funding a testnet demonstration, recovery, replay, export.
 - Confirmation threshold 2 and finalized-head tracking verified against a real RPC.
 - Sepolia ENS names registered and pinned into the deployment manifest, display-only ([ADR-030](decision_log.md)). If registration is not ready, the deployment ships without names and they are added afterwards; stage 5 does not wait on them.
