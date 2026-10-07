@@ -1,0 +1,53 @@
+{
+  "table_version": "1",
+  "models": {
+    "claude-sonnet-5-5": {
+      "description": "Claude Sonnet 5.5, the default model (ADR-014, Q72).",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing, model pricing table, standard (global) rates.",
+      "last_verified": "2026-10-04",
+      "usd_per_million_tokens": {
+        "input": "2",
+        "output": "10",
+        "cache_write_5m": "2.50",
+        "cache_write_1h": "4",
+        "cache_read": "0.20"
+      }
+    },
+    "claude-sonnet-5": {
+      "description": "Claude Sonnet 5.",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing, model pricing table, standard (global) rates.",
+      "last_verified": "2026-10-04",
+      "usd_per_million_tokens": {
+        "input": "2",
+        "output": "10",
+        "cache_write_5m": "2.50",
+        "cache_write_1h": "4",
+        "cache_read": "0.20"
+      }
+    },
+    "claude-opus-5-5": {
+      "description": "Claude Opus 5.5.",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing, model pricing table, standard (global) rates.",
+      "last_verified": "2026-10-04",
+      "usd_per_million_tokens": {
+        "input": "4",
+        "output": "20",
+        "cache_write_5m": "5",
+        "cache_write_1h": "8",
+        "cache_read": "0.20"
+      }
+    },
+    "claude-opus-5": {
+      "description": "Claude Opus 5, the default until Q72 was answered.",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing, model pricing table, standard (global) rates.",
+      "last_verified": "2026-10-04",
+      "usd_per_million_tokens": {
+        "input": "5",
+        "output": "25",
+        "cache_write_5m": "6.25",
+        "cache_write_1h": "10",
+        "cache_read": "0.50"
+      }
+    }
+  }
+}

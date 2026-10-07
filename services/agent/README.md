@@ -45,15 +45,21 @@ signer loaded ([runbook.md](../../docs/runbook.md) section 8).
 | `state/`, `observation.py` | Run-scoped memory; a typed view of a schema-valid observation |
 | `consistency.py` | Refuse an observation that contradicts itself or the approved session (ADR-046) |
 | `keys/references.py` | The grammar a key reference must satisfy, so a pasted key is refused (ADR-049) |
+| `model/` | `ModelClient` and its Anthropic implementation: the request, the decision envelope, every way a call ends as one `ModelOutcome`, the key by `env:` reference (stage 3.1, ADR-086) |
+| `budget/` | `BudgetGuard`, the call and spend ceilings before each call, and the model price table (stage 3.1, ADR-085) |
 | `settings.py`, `logs.py`, `main.py` | `AGENT_*` configuration, redacted JSON logs, the composition root |
+| `tools/smoke_model.py` | One real model call through the client, `make smoke-model` (runbook section 9) |
 
 `prompts/` will hold versioned prompt templates, changed through review like any other source,
 with the version hash recorded per decision ([ADR-029](../../docs/decision_log.md)). The model
-policy arrives in stage 3.
+client and the budget are built (stage 3.1); the model policy that uses them arrives in stage 3.2.
 
 ## Tests
 
 `tests/unit/` runs in process with fakes. `tests/integration/test_negotiation_on_anvil.py` is stage
 2.2's exit condition: two instances as real processes, driven over HTTP by a stand-in for the
-backend and the relay, negotiate both scenarios on Anvil through the real contract. The validator
+backend and the relay, negotiate both scenarios on Anvil through the real contract.
+`tests/unit/test_model_client.py` drives the model client against a local server that answers as
+the provider does (`tests/support/fake_anthropic.py`); nothing in the suite reaches the network.
+The validator
 and the signer are held to 100 percent of branches (`make coverage-python`).

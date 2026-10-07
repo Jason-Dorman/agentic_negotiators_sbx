@@ -139,7 +139,7 @@ The policy signer validates the **complete trade** before signing an offer, beca
 | Participant keys (per run) | Nowhere. Derived inside the agent process at provisioning from the instance's root, the chain ID, the role and the run ID | Never loaded; recomputed on re-provisioning | New wallets every run; the database stores the address and the derivation metadata only |
 | Operator key | `.env` or keystore | Backend only, as `OPERATOR_KEY_REF` into the relay's `LocalTransactionSigner` (stage 2.3) | Per deployment |
 | Relay key | `.env` or keystore | Backend only, as `RELAY_KEY_REF` into the relay's `LocalTransactionSigner` (stage 2.3) | Per deployment; fund with test ETH only |
-| Model API key | `.env` for each agent instance, separately | `anthropic` SDK from env | Operator-managed |
+| Model API key | `.env` for each agent instance, separately, named by its `AGENT_MODEL_KEY_REF` (`env:` only, never a variable holding another secret or the root, [ADR-086](decision_log.md)) | the agent's model client, given the key explicitly; no `ANTHROPIC_*` variable, custom header or redirect can substitute for it or send it elsewhere | Operator-managed |
 | Agent shared secrets | `.env`, one per instance | HMAC verification | Per deployment |
 | Database URL | `.env` | Backend only | |
 

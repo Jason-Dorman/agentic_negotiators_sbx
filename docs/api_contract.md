@@ -153,7 +153,7 @@ Request:
   },
   "buyer": {
     "policy": "model" | "deterministic",
-    "model_id": "claude-opus-5",
+    "model_id": "claude-sonnet-5-5",
     "effort": "high",
     "initial_balances": { "base_minor": "0", "quote_minor": "250000000" },
     "allowance_minor": "250000000",
@@ -161,7 +161,7 @@ Request:
   },
   "seller": {
     "policy": "model",
-    "model_id": "claude-opus-5",
+    "model_id": "claude-sonnet-5-5",
     "effort": "high",
     "initial_balances": { "base_minor": "25000000", "quote_minor": "0" },
     "allowance_minor": "25000000",
@@ -214,7 +214,7 @@ Public configuration, timeline summary, and status. Never includes mandates, pri
     "opened_tx_hash": "0x…"
   } | null,
   "parties": {
-    "buyer": { "address": "0x…", "policy": "model", "model_id": "claude-opus-5", "effort": "high", "balances": { "base_minor": "0", "quote_minor": "250000000" }, "current_action": "deciding" | "idle" | "signing" | "awaiting_confirmation", "decision_status": null },
+    "buyer": { "address": "0x…", "policy": "model", "model_id": "claude-sonnet-5-5", "effort": "high", "balances": { "base_minor": "0", "quote_minor": "250000000" }, "current_action": "deciding" | "idle" | "signing" | "awaiting_confirmation", "decision_status": null },
     "seller": { … }
   },
   "timeline": [
@@ -332,7 +332,7 @@ Private operational records. Requires `X-Observer-Reveal: true`.
   "decisions": [
     {
       "decision_id": "…", "turn": 2, "party": "seller", "attempt": 1,
-      "policy": "model", "model_id": "claude-opus-5", "prompt_template_version": "v1.0.0", "effort": "high",
+      "policy": "model", "model_id": "claude-sonnet-5-5", "prompt_template_version": "v1.0.0", "effort": "high",
       "observation_hash": "0x…",
       "raw_response": { "decision": { "action": "offer", "quote_amount_minor": "85000000" }, "explanation": "…" },
       "validation": { "ok": false, "code": "below_reservation", "feedback": "Your quote is below your reservation price." },
@@ -534,7 +534,7 @@ Idempotent. Delivers the mandate and configuration this instance needs for one r
 {
   "role": "buyer",
   "policy": "model",
-  "model_id": "claude-opus-5",
+  "model_id": "claude-sonnet-5-5",
   "effort": "high",
   "limits": { "model_call_ceiling": 20, "model_spend_ceiling_usd": "2.00", "model_timeout_s": 45, "repair_attempts": 1 },
   "expected_session": { "chain_id": 31337, "exchange_address": "0x…", "base_token": "0x…", "quote_token": "0x…", "base_amount_minor": "10000000", "max_offers": 8, "session_duration_s": 1800, "offer_lifetime_s": 600 },

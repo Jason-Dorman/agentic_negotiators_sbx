@@ -73,6 +73,7 @@ max-complexity = 9
 # a developer or by CI and their result is what the terminal shows.
 "infra/scripts/*" = ["T20"]
 "packages/protocol/tools/*" = ["T20"]
+"services/agent/tools/*" = ["T20"]
 
 [tool.ruff.format]
 docstring-code-format = true

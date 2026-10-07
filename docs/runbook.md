@@ -20,6 +20,7 @@ has actually exercised; nothing is written ahead of the code that makes it true.
 | 6. Recovering pending transactions | Stage 2.3 (transactions); stage 2.4 (runs) |
 | 7. Funding a testnet demonstration | Stage 5 |
 | 8. The whole stack, the operator API and the export | Stage 2.5; replay in stage 4 |
+| 9. The model: its key, its price table and the smoke call | Stage 3.1; live runs in stage 3.4 |
 
 ---
 
@@ -811,3 +812,73 @@ copy it, add an entry — its price per million units, the units each method cos
 unlisted methods or `null`, a `source` and a `last_verified` date — and point `RPC_PRICE_TABLE` at
 the copy and `RPC_PROVIDER` at the entry's name. A provider the table does not list, or a method it
 cannot price, shows its cost as unknown, never as zero. Stage 5 adds Sepolia's provider.
+
+## 9. The model: its key, its price table and the smoke call
+
+Stage 3.1 built the model client and the budget; stage 3.2 puts them behind the agent's
+`ModelPolicy`, and stage 3.4 adds the procedure for a live model-versus-model run. Until then, an
+agent instance offers the deterministic policy only.
+
+### The key
+
+Each agent instance has its own Anthropic API key, named by its own reference
+([ADR-086](decision_log.md)): `AGENT_MODEL_KEY_REF=env:BUYER_ANTHROPIC_API_KEY` for the buyer's
+instance, with the key in `BUYER_ANTHROPIC_API_KEY`, and the seller's counterparts. Only the `env:`
+form is accepted; a `keystore:` reference, or a key pasted where its reference belongs, stops the
+instance starting with a message that does not repeat it. So does a reference to a variable that
+holds another secret — an `AGENT_` setting, a root, a private key, a shared secret, the keystore
+password, or whatever variable `AGENT_ROOT_KEY_REF` names — and a value that does not begin
+`sk-ant-`, so a slip cannot send a signing key to the provider (Q79). The client is handed the key
+explicitly, so `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, an `ant auth login`
+profile and the headers of `ANTHROPIC_CUSTOM_HEADERS` are never used, even when set, and it follows
+no redirect. Two keys make each agent's spend visible separately in the
+provider's usage reports; one key for both works, but the spend is then one figure.
+
+### The price table
+
+Every model call is priced from the model price table before it is sent and after it returns
+([ADR-085](decision_log.md)). The packaged table, `services/agent/src/agent/budget/model_prices.json`,
+prices `claude-sonnet-5-5` — the default — `claude-sonnet-5`, `claude-opus-5-5` and `claude-opus-5`
+per million tokens of uncached input, output, cache reads, and 5-minute and 1-hour cache writes,
+each with a `source` and a `last_verified` date. When a price changes, copy the file, edit the
+entry and its `last_verified`, and point `AGENT_MODEL_PRICE_TABLE` at the copy; the agent service
+reads it from stage 3.2, when it builds the client, and a model priced twice in one file is refused. A model the table
+does not list is refused before any call is made; `AGENT_ALLOW_UNKNOWN_PRICE=true` lets it run with
+only the call ceiling to stop it, and its cost then shows as unknown, never zero.
+
+The two figures on a decision record are different things. *Estimated* is the call's worst case,
+priced before it was sent: its counted input at the dearest input rate, and the full
+`AGENT_MODEL_MAX_TOKENS` (16,000) of output — $0.16 at the default model's rates. *Reported* is what
+the provider said the call used, priced from the same table, and is typically a few cents. The spend
+ceiling counts the reported cost of past calls and the estimate of the next one, so the default
+$2.00 ceiling admits a call while less than about $1.84 has been spent. A call that reported nothing
+— a timeout, an error status, a malformed answer, a call cancelled at a deadline — is counted at its
+estimate, because it may still have been billed. Its reported cost is unknown, and so is the run's
+reported total: read the estimate beside it, which is always known for a priced model (Q81).
+
+### The smoke call
+
+One real call through the agent's own client, to show that the provider accepts the request it
+builds and that usage and both costs come back. It costs about a cent, at most about two cents on
+the default model (`max_tokens` is 2,000 for this call, under a $0.10 ceiling), and is never part
+of `make ci`:
+
+```bash
+export BUYER_ANTHROPIC_API_KEY=sk-ant-...          # in this shell only, not infra/.env
+make smoke-model KEY_REF=env:BUYER_ANTHROPIC_API_KEY
+```
+
+It prints the outcome, the model asked for and the model that answered, the stop reason, the usage,
+both costs, the request id and the latency — never the key, the prompt or the answer — and exits 0
+when the outcome is `decided`. Any other outcome exits 1 and says which:
+
+| Outcome | What to do |
+|---|---|
+| `rejected`, 401 | The key is wrong or revoked |
+| `rejected`, 404 | The model id is not one the key's workspace can use |
+| `rejected`, 400 | The request shape was refused; the provider's error type is printed. Report it: the client builds the request |
+| `rejected`, 3xx | Something between here and the provider redirected the call; it was not followed. Check for a proxy |
+| `rate_limited` | Wait and run it again; nothing was retried |
+| `provider_failure`, `connection_failed`, `timeout` | The provider or the network; run it again later |
+| `budget_refused` | The model is not in the price table; the refusal's reason is printed |
+| `refusal`, `max_tokens`, `unparseable` | The call worked and the model's answer was not a decision; the request shape was accepted |

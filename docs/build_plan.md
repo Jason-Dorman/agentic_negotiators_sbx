@@ -903,12 +903,243 @@ container wrote, the restart's included, held a key, a root, a shared secret or 
 
 ## Stage 3: Model decisions
 
-**Deliverables**
-- `ModelPolicy`, `ModelClient` wrapper over the Anthropic SDK with structured outputs, prompt templates with versioning, `BudgetGuard`, price table config, repair loop, refusal and timeout handling.
-- Outbound-context assertion and the isolation test suite.
-- Decision records with usage and cost.
+**Status: in progress; 3.1 complete, 6 October 2026.** Split into four sub-stages on 4 October 2026 at the product owner's direction, before work began, so
+that each is one pass, one branch and one pull request ending in a demonstrable artefact of its own,
+as stage 2's were. The stage's deliverables and exit condition are unchanged; they are met at the
+end of 3.4.
 
-**Exit condition:** A04 and A12 pass; with live credentials, at least one genuine model-versus-model settlement and one genuine model-versus-model no-deal (on the infeasible clone) complete on Anvil, with exports saved under `docs/evidence/` and passing the invariant checker. No hardcoded agreement anywhere; grep test in place.
+```mermaid
+flowchart LR
+    S2[2 Deterministic end-to-end] --> MC[3.1 Model client<br/>and budget]
+    MC --> MP[3.2 ModelPolicy,<br/>prompts, fixtures]
+    MP --> IS[3.3 Isolation suite<br/>A12]
+    IS --> EV[3.4 Invariant checker<br/>and live evidence]
+    EV --> S4[4 React demonstration]
+```
+
+The order is strict. 3.2 needs 3.1's client; 3.3 drives whole runs on 3.2's fixture responses; and
+3.4 spends real money, so it comes after the isolation the core claim rests on has been shown,
+never before.
+
+Stage 2 already built most of the backend half: the controller aborts with reason 2 on
+`model_failed` and reason 3 on `budget_exhausted`, the `decisions` table carries usage, cost and
+latency, `runs.mode` admits `fixture`, and the metrics price model cost with unknown kept unknown.
+Stage 3 is therefore mostly the agent service's `model/` and `budget/` modules
+([architecture.md](architecture.md) section 3.3) and the tests that hold them.
+
+Five questions bore on this stage when it was split, each needed by the sub-stage named and put to
+the product owner before that sub-stage starts. Q72, the default model, was needed by 3.1 and was
+answered on 4 October 2026: `claude-sonnet-5-5` ([ADR-014](decision_log.md) amended). Still open in
+[open_questions.md](open_questions.md): Q46, a malformed attempt in the next observation; Q71, a NUL
+in a stored response; and Q73, how a run comes to use canned model responses, by 3.2. Q74, the
+spending cap and attempt limit for the live evidence, by 3.4.
+
+**Stage deliverables**
+- `ModelPolicy`, `ModelClient` wrapper over the Anthropic SDK with structured outputs, prompt templates with versioning, `BudgetGuard`, price table config, repair loop, refusal and timeout handling. (3.1 and 3.2)
+- Outbound-context assertion and the isolation test suite. (3.3)
+- Decision records with usage and cost. (3.2)
+
+**Stage exit condition, met at the end of 3.4:** A04 and A12 pass; with live credentials, at least one genuine model-versus-model settlement and one genuine model-versus-model no-deal (on the infeasible clone) complete on Anvil, with exports saved under `docs/evidence/` and passing the invariant checker. No hardcoded agreement anywhere; grep test in place.
+
+### Stage 3.1: Model client and budget
+
+**Status: complete, 6 October 2026.** Built on 4 October and reviewed adversarially on 5 October
+(below). Every deliverable below is done and its gate is green: 732 agent-service tests (165 of them
+new), the whole Python suite with integration required (1,693 passed, 2 skipped by design),
+`mypy --strict`, `ruff` and the six import contracts.
+
+The exit condition's smoke call was made by the product owner on 6 October 2026 (`make
+smoke-model`, runbook section 9), and the real API accepted the request the client builds:
+outcome `decided`, served by `claude-sonnet-5-5`, the model asked for, `end_turn`, in 2.6 s. Usage
+came back as 26 uncached input tokens, 1,069 written to the 5-minute cache and 63 output tokens. The
+token count before the call, 1,095, equalled the input billed, so the estimate was a true bound:
+1,095 tokens at the dearest input rate and 2,000 output tokens, $0.024380. The reported cost, each
+kind of token at its own rate, was $0.003355. The system prompt was long enough to be written to
+the cache, which stage 3.2's later calls in a run will read.
+
+Four questions went to the product owner before the code was written and were answered on
+4 October 2026: the default model is `claude-sonnet-5-5` (Q72, [ADR-014](decision_log.md)
+amended); a call's reported cost is the provider's usage priced from the table, its estimate the
+pre-call bound, and the spend ceiling counts reported cost spent plus the next call's estimate (Q75,
+[ADR-085](decision_log.md)); the API key is an `env:` reference per instance,
+`AGENT_MODEL_KEY_REF` (Q77, [ADR-086](decision_log.md)); and `max_tokens` is 16,000, configurable
+(Q76, [ADR-087](decision_log.md)).
+
+What the build found, and decided within those answers:
+
+- `messages.parse` raises when the model's text does not validate, and the exception carries
+  neither the usage nor the request id, which a refused, truncated or malformed answer must still
+  record. The client sends exactly the output format `parse` would — the SDK's `transform_schema` of
+  the envelope model — through `messages.create`, and validates the text itself
+  ([ADR-014](decision_log.md) as built).
+- The SDK demotes a `const` in the schema to a description, which would have left `action`
+  unconstrained, and a Pydantic optional field admits `null`, which the decision schema refuses. The
+  envelope model writes each `action` as a one-value `enum` and leaves `explanation` out of
+  `required` without making it nullable.
+- At `DEBUG`, or with `ANTHROPIC_LOG=debug`, the SDK logs each request's options, the system prompt
+  and its mandate among them. `agent.logs` holds the SDK's and its HTTP library's loggers at
+  `WARNING` ([ADR-086](decision_log.md)).
+- Given no explicit key and base URL, the SDK reads `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, a
+  login profile and `ANTHROPIC_BASE_URL` on its own; the client passes both, and a test sets all
+  three to wrong values.
+- The model price table lives in the agent package, `agent/budget/model_prices.json`, because the
+  agent cannot import the backend's `config`, where the RPC table is; its shape is the RPC table's.
+  It prices the 1-hour cache write apart from the 5-minute one, because the provider's usage
+  reports them apart.
+
+**Deliverables**
+- **done** — `agent.model`: the `ModelClient` protocol of [architecture.md](architecture.md) section 7, one
+  method, `decide(system_prompt, observation, schema) -> ModelResult`, and its Anthropic
+  implementation over the official SDK's async client — the output format `messages.parse` would
+  send for a Pydantic model of the decision envelope, through `messages.create` (ADR-014 as built),
+  adaptive thinking, `output_config.effort` from provisioning, the 45 s
+  timeout, SDK retries 0, server-side fallbacks off ([ADR-015](decision_log.md)), no prefill, no
+  tools. `ModelResult` carries the parsed decision or the raw text, `stop_reason`, usage with
+  cached input counted as ADR-079 says, the provider's request id and the latency.
+- **done** — Failure sorting: every way a call can end — a parsed decision, `refusal`, `max_tokens`, a
+  timeout, a rate limit, a provider 4xx or 5xx, a connection failure, a body that does not parse —
+  becomes one distinguishable `ModelResult` outcome, mapped to the turn response's `failure.code`
+  (`timeout`, `refusal`, `provider_error`) in 3.2. Nothing is retried here.
+- **done** — `agent.budget`: `BudgetGuard` — before each call, `count_tokens` on the exact request plus
+  `max_tokens` as the output bound, priced from the model price table; refuse when the run's call
+  ceiling or spend ceiling would be crossed; record the estimate and the reported cost apart; an
+  unknown price refuses the call unless the operator sets `allow_unknown_price`.
+- **done** — The model price table: a packaged file beside the RPC price table, priced per million input,
+  output, cache-write and cache-read tokens per model, with `source` and `last_verified`, and its
+  loader, named in `AGENT_*` settings; and the provider's API key read through a key reference,
+  never a value, and kept out of every log line. The agent's own package holds the table, because
+  the agent may not import the backend's `config`; the service reads the table and the key from 3.2,
+  when it builds the client.
+
+**Exit condition:** The unit tests of [test_strategy.md](test_strategy.md) section 6 for
+`BudgetGuard` pass — call ceiling, spend ceiling, unknown price refused and allowed, estimate apart
+from report. The Anthropic client is driven against a local HTTP server that answers as the
+Messages and token-counting endpoints do, as the RPC adapter's errors are tested in 2.3, and each
+outcome above is asserted from a real HTTP exchange, including a timeout the server causes by not
+answering. No test in CI reaches the network. One opt-in smoke call against the real API
+(`make smoke-model`, about one cent) shows the request shape is accepted and usage and cost come
+back.
+
+#### The adversarial review, 5 October 2026
+
+Five lenses over the change set — claims against reality; the client against how the provider and
+the SDK behave; the money; keys and private values; and vacuity, the fake server included — each in
+its own copy of the tree, then two independent refutation attempts per finding, one on truth and one
+on impact: 23 agents, about 2M tokens, and no call to the real API. 35 candidates merged to 21
+distinct; the 8 most severe were verified, 5 survived both refutations and 3 were refuted; 13 were
+left open over the verification cap. Four of its questions went to the product owner and were
+answered on 5 October 2026 (Q78 to Q81, amendments to [ADR-085](decision_log.md) and
+[ADR-086](decision_log.md)). Every confirmed finding is fixed in this change set, and so are the
+open ones that were defects; each fix was then undone on its own and the tests aimed at it shown to
+fail — 19 of them, all killed. The ones that mattered:
+
+- **`decide` could raise, and an admitted call go uncharged.** Only the SDK's own errors were
+  caught: a success body cut off, empty or not UTF-8, content of the wrong shape beside valid usage,
+  or a count too large for the guard's arithmetic escaped as an exception after the guard had
+  counted the call, and the spend never included it. A call cancelled while waiting — how 3.2's
+  deadline will end one — did the same. Every admitted call is now settled exactly once, a malformed
+  body is `provider_failure`, and a cancellation is charged its estimate before it propagates.
+- **`ANTHROPIC_CUSTOM_HEADERS` could replace the referenced key.** The SDK reads it whenever a
+  client is built or copied and sends its headers after the key; a test showed another key, a
+  bearer token and a fallback beta header going out. The client drops them (Q78).
+- **The test of the schema sent could not fail.** It compared the request with the same
+  `transform_schema` call the client makes, so undoing the `action` enums, adding a close reason or
+  letting `explanation` be null left it green. It now asserts the schema literally.
+- **A redirect was followed**, resending the key and the prompt to wherever it pointed; it is now
+  `rejected` (Q80). **A model key reference could name the root signing key**; references to
+  another secret, or to the root's own variable, and values not shaped like an Anthropic key are
+  refused at start-up (Q79). **A failed attempt makes the run's reported cost unknown**, which is
+  now stated rather than left to be found (Q81).
+- Smaller: cache-write usage and the run's timeout (rather than the SDK's ten minutes) are now
+  tested; `httpcore2`, the logger actually under the SDK, is held at `WARNING`; an empty
+  `AGENT_MODEL_PRICE_TABLE` is unset rather than the working directory; a model priced twice in one
+  table is refused; the smoke call's ceiling admits every priced model; and this stage's own
+  wording — `messages.parse`, a table "loaded by the agent service" — is corrected above.
+
+Refuted, with reasons kept in the review's record: the timeout bounds each read rather than the whole
+call (true, and 3.2's deadline is what bounds a turn); data-residency pricing (no documented setup
+uses it); and the ceilings being per agent rather than per run (the protocol caps each agent's calls
+below the ceiling at the defaults).
+
+### Stage 3.2: ModelPolicy, prompts and fixtures
+
+**Deliverables**
+- Prompt templates under `services/agent/prompts/`, versioned, with the version hash recorded per
+  decision ([ADR-029](decision_log.md)): role, protocol rules and output schema in that order, then
+  the mandate's `instructions` in a delimited section introduced as the agent's own private
+  guidance, the whole system prompt static per run behind a cache breakpoint, the observation after
+  it. A repair attempt's message carries this agent's own validation feedback and nothing else.
+- `ModelPolicy` behind the `Policy` protocol, registered in the composition root: the repair loop
+  up to `limits.repair_attempts`, `refusal` and unparseable answers treated as refused attempts,
+  `deadline_at` enforced against the model call, and every attempt's `PolicyResponse` filled with
+  its raw response, stop reason, usage, estimated and reported cost. `policy_kinds` gains `model`
+  and `model_ok` reports the client.
+- Decision records with usage and cost end to end: the agent's turn response carries each
+  attempt's accounting, the backend stores it in `decisions` unchanged, and the run's metrics and
+  export show it.
+- The fixture model client: canned responses from `tests/fixtures/model_responses/`, a run that
+  uses them marked `fixture` in `runs.mode` and labelled so on every surface, as Q73 settles.
+- Q46 and Q71 answered and built.
+
+**Exit condition:** The `ModelPolicy` unit tests of test_strategy section 6 pass with a fake
+`ModelClient` — valid first attempt, invalid then valid repair, invalid twice, timeout, refusal,
+`max_tokens`, provider error, the repair message holding only this agent's feedback. A04 passes end
+to end on Anvil through the API with fixture responses: a seller's model proposing 85 against a
+floor of 90 is refused, repaired once, refused again, nothing reaches the outbox, and the run is
+aborted with reason 2. A run whose spend ceiling is crossed is aborted with reason 3. A
+fixture-driven model-versus-model run settles on Anvil with decision records holding usage and cost,
+metrics reporting them, and an export that validates.
+
+### Stage 3.3: Isolation suite (A12) and the no-hardcoding gate
+
+**Deliverables**
+- The outbound-context assertion in the agent's send path: every request body scanned before it
+  leaves for this instance's root secret, derived keys, HMAC secret, provider key and key-shaped or
+  credential-shaped strings, and a hit refuses the call as a distinct failure, logged without the
+  match.
+- `services/api/tests/isolation/test_a12_leakage.py`: whole model-versus-model runs on fixture
+  responses with every outbound model request from both agents captured, then scanned for the
+  opponent's mandate values and instructions, the opponent's validation feedback, keys and
+  credentials; the same scan over every log line both agents and the API wrote, every SSE event and
+  the default export. Mandates are chosen so that each value is a distinctive string a scan cannot
+  miss or confuse.
+- Prompt-injection cases: an `instructions` field that tries to change the rules, reveal the
+  mandate, or emit a fourth decision shape, each ending in a refused attempt or an in-mandate
+  action and never a signature outside the legal set.
+- The grep test of test_strategy section 11: no non-test module compares against the default
+  reservation values, or names a final price.
+
+**Exit condition:** A12 passes. Each scan is shown to catch a deliberate leak — the opponent's
+reservation price put into the observation, feedback put into the other agent's repair, a key put
+into a request — before the suite is counted, and the outbound assertion is shown to refuse a
+request carrying the agent's own secret. The grep test fails on a planted literal and passes
+without it. Both run in CI.
+
+### Stage 3.4: Invariant checker and live evidence
+
+**Deliverables**
+- `services/api/eval/check_invariants.py` as test_strategy section 9 describes — no mandate
+  violation, exact deltas on settlement, contiguous sequences, a canonical terminal event, no
+  infeasible settlement, failures classified — run against exports, failures included. Stage 3's
+  exit needs it, so it is built here; stage 6's batch evaluator calls it rather than building its
+  own.
+- The agents' model credentials in the Compose profile and `infra/.env.example` as key references,
+  and a runbook section for a live model run: setting the key, the ceilings, reading the cost, what
+  to do when a run does not settle.
+- The live runs on Anvil, model versus model: `default-overlap` and its infeasible clone, their
+  exports saved under `docs/evidence/` with each run's cost.
+
+**Exit condition:** The checker passes every stage 2 and 3.2 export and fails each of a set of hand-broken
+ones, one per invariant. With live credentials, at least one genuine model-versus-model settlement
+and one genuine no-deal on the infeasible clone, both exports in `docs/evidence/` passing the
+checker. A live run that fails to settle is kept and reported as a result; another attempt is a new
+run with nothing changed to make it settle, within Q74's limit.
+
+**Cost.** Only this sub-stage and 3.1's single smoke call spend real money. A model-versus-model
+run on `default-overlap` is roughly 10 to 20 model calls across both agents; at the default model's
+list price, `claude-sonnet-5-5` at $2 / $10 (Q72), that is an estimated $0.20 to $0.60 a run, under
+the $2.00 per-run spend ceiling of api_contract section 2. Two runs meet the exit condition; a
+budget of six covers a run that does not settle and is repeated, about $1.20 to $3.60 in all.
 
 ## Stage 4: React demonstration
 
@@ -987,7 +1218,11 @@ Rough, single developer with AI assistance, for planning only:
 | 2.3 Relay, indexer, projection | 2 to 3 days |
 | 2.4 Run controller and turns | 2 to 3 days |
 | 2.5 Operator API, evidence, Compose | 2 days |
-| 3 | 4 to 6 days |
+| 3 | 4 to 6 days in total |
+| 3.1 Model client and budget | 1 day |
+| 3.2 ModelPolicy, prompts, fixtures | 1.5 to 2 days |
+| 3.3 Isolation suite and no-hardcoding gate | 1 day |
+| 3.4 Invariant checker and live evidence | 1 to 1.5 days |
 | 4 | 6 to 9 days |
 | 5 | 2 to 4 days plus testnet wait time |
 | 6 | 3 to 5 days plus batch run time |

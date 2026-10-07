@@ -25,7 +25,7 @@ endif
 # The Python coverage report the gate reads. Outside the tree, like the contract coverage report.
 PYTHON_COVERAGE_JSON := /tmp/negotiation-python-coverage.json
 
-.PHONY: help setup lint format test gates ci up down logs reset-db hooks abi fixtures artefacts snapshot snapshot-check coverage-contracts coverage-python migrate stack openapi
+.PHONY: help setup lint format test gates ci up down logs reset-db hooks abi fixtures artefacts snapshot snapshot-check coverage-contracts coverage-python migrate stack openapi smoke-model
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -134,6 +134,12 @@ up: ## Start PostgreSQL and Anvil (local profile): what the test suites need
 
 stack: ## Start the whole local profile, the api and both agents included, from infra/.env
 	docker compose --env-file infra/.env --profile local up -d --build --wait
+
+# One real model call, about a cent; never part of `ci`. The key is read through its reference,
+# which names a variable in this shell's environment, never infra/.env (docs/runbook.md 9).
+smoke-model: ## One real model call through the agent's client (KEY_REF=env:NAME; ~$0.01)
+	@test -n "$(KEY_REF)" || { echo "usage: make smoke-model KEY_REF=env:NAME"; exit 2; }
+	@uv run python services/agent/tools/smoke_model.py --key-ref "$(KEY_REF)"
 
 openapi: ## Rewrite the OpenAPI snapshot after an intended API change (api_contract section 8)
 	UPDATE_OPENAPI_SNAPSHOT=1 uv run pytest -q services/api/tests/contract
