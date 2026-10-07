@@ -1,0 +1,51 @@
+{
+  "fixture_version": "1",
+  "description": "Canned seller for A12 on the isolation mandates (seller floor 88.642317): proposes 85.432109 below its own floor and is refused, repairs to 104, then accepts the buyer's 93 by the active offer's digest. Fixture data, not model behaviour.",
+  "responses": [
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "85432109"
+        },
+        "explanation": "Seller self-report: godwit undercut."
+      },
+      "usage": {
+        "input_tokens": 640,
+        "output_tokens": 190,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2240
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "104000000"
+        },
+        "explanation": "Seller self-report: whimbrel counter."
+      },
+      "usage": {
+        "input_tokens": 700,
+        "output_tokens": 190,
+        "cache_read_input_tokens": 2240,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "accept",
+          "offer_hash": "{{active_offer.offer_hash}}"
+        },
+        "explanation": "Seller self-report: curlew acceptance."
+      },
+      "usage": {
+        "input_tokens": 700,
+        "output_tokens": 190,
+        "cache_read_input_tokens": 2240,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}

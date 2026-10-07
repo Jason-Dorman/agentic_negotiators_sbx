@@ -35,7 +35,7 @@ class SentenceContextError(ValueError):
 
 
 def format_minor(amount: int | str, decimals: int = TOKEN_DECIMALS) -> str:
-    """`93333333` → `"93.333333"`, `92000000` → `"92"`. Exact: integers, never a float."""
+    """`87654321` → `"87.654321"`, `92000000` → `"92"`. Exact: integers, never a float."""
     number = int(amount)
     if number < 0:
         raise ValueError("a token amount is never negative")

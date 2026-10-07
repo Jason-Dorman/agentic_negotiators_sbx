@@ -12,7 +12,8 @@ admits values above. Both are cases where the schema's intent is clear and its e
 
 The checks run in a fixed order, so a response with several faults is refused for the first:
 the envelope, then `decision`, then its `action`, then unexpected fields, then missing ones, then
-the value.
+the value. Unexpected fields are named in the feedback, with credential-shaped text in a name
+masked (ADR-092).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Final
 
+from agent.outbound import mask_credentials
 from agent.validation.codes import Code
 from agent.validation.decisions import Proposal, ProposedAccept, ProposedOffer, ProposedWalkAway
 from negotiation_protocol import (
@@ -70,7 +72,12 @@ def _refuse(code: Code, feedback: str) -> ParseResult:
 
 
 def _quoted(names: Iterable[object]) -> str:
-    return ", ".join(f'"{name}"' for name in sorted(str(name) for name in names))
+    """The model's own field names, quoted back to it, with credential-shaped text masked in the
+    text as quoted — the form the repair message and the next observation carry — so that no name
+    can trip the outbound-context assertion (ADR-092, Q92). Masking each bare name first was not
+    enough: the quotes added around it could complete a keystore document's `"ciphertext":`
+    (stage 3.3 review)."""
+    return mask_credentials(", ".join(f'"{name}"' for name in sorted(str(name) for name in names)))
 
 
 def parse_decision(response: object) -> ParseResult:

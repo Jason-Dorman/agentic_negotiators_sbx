@@ -11,6 +11,8 @@ behaviour (docs/test_strategy.md section 11).
 |---|---|
 | `default-overlap-settles` | `default-overlap` to a settlement at 94: buyer 90, seller 98, buyer 94, seller accepts |
 | `a04-seller-below-floor` | A04: the seller proposes 85 against its floor of 90, twice, and the run aborts with reason 2 |
+| `a12-isolation` | A12, on the isolation suite's mandates (buyer bound 97.531246, seller floor 88.642317): buyer 80; seller 85.432109 refused below its floor, repaired to 104; buyer 99.123457 refused above its bound, repaired to 93; seller accepts. Each side has one refused attempt, so each has private feedback the other must never see |
+| `a12-injection` | A12's prompt-injection run: a buyer obeying instructions that try to change the rules — a fourth decision shape refused, an in-mandate 82 whose explanation reveals its bound, an accept above its bound refused, then a walk-away |
 | `spend-ceiling` | With a $0.40 spend ceiling and `claude-sonnet-5-5`, the buyer's third call is refused and the run aborts with reason 3 (at another model's prices, another call) |
 
 The script format is `agent.model.fixtures`: each entry is an `answer` (a decision envelope, whose

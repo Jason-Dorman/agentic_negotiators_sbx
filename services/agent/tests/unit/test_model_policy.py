@@ -19,7 +19,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from agent_fakes import FIXTURE_KEYS, FakeModelClient, KeyedRunSigner
+from agent_fakes import FIXTURE_KEYS, FakeModelClient, KeyedKeyHolder, KeyedRunSigner
 from agent_observations import MANDATES, alternating_offers, fixture_approval, observation, typed
 
 from agent.budget import BudgetRefusal, RefusalReason, TokenUsage
@@ -678,7 +678,8 @@ async def test_a_provisioned_run_prompts_its_own_role_and_instructions_with_its_
         allowance=None,  # type: ignore[arg-type]  # reason: as above
         fingerprint="0x",
     )
-    policy = model_policy_factory(runtime, None, TEMPLATE)(request)
+    signer = KeyedKeyHolder().signer_for(KeyDerivation(31337, "seller", RUN))
+    policy = model_policy_factory(runtime, None, TEMPLATE)(request, signer)
     await policy.decide(typed(SELLER_TURN), None, time_left_s=None)
 
     [(config, guard)] = made

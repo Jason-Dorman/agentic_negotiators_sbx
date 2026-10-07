@@ -191,6 +191,8 @@ uv run --group tooling python infra/scripts/generate_keys.py --profile local
 
 # Sepolia profile: encrypted web3 keystores written to infra/secrets/.
 # Set the password in your shell, not on the command line, so it stays out of shell history.
+# At least 12 characters: an agent checks every model request for it, and will not offer the
+# model policy behind a shorter one (ADR-092).
 read -rs KEYSTORE_PASSWORD && export KEYSTORE_PASSWORD
 uv run --group tooling python infra/scripts/generate_keys.py --profile sepolia
 ```
@@ -269,6 +271,12 @@ PY
 | `KEYSTORE_PASSWORD is not set, so the keystore … cannot be opened` | Export the password in the instance's environment |
 | `the keystore … cannot be read` / `… is not a keystore: it is not JSON text` | The path is wrong, not mounted, or not a keystore file |
 | `the keystore … could not be decrypted with KEYSTORE_PASSWORD` | Wrong password for that file |
+
+An instance whose root is a keystore and whose `KEYSTORE_PASSWORD` is shorter than 12 characters
+signs as usual but reports `model_ok: false`, and its `model_unavailable` log line says
+`KEYSTORE_PASSWORD is shorter than 12 characters`: every model request is checked for the
+password, so a short one would refuse ordinary requests that happen to contain it (Q95). Re-encrypt
+the keystore under a longer password.
 
 **After an agent restart.** A restarted instance has forgotten every run and answers the next call
 for one with `409 invalid_state`, state `unprovisioned`. From stage 2.4 the controller recovers on
@@ -609,6 +617,7 @@ outcome stays `pending`, and an unresolved fault is never recorded as a no-deal 
 | `observation_inconsistent` | An agent refused five observations in a row as contradictory ([ADR-046](decision_log.md)). A backend defect or a persistently stale read | Compare the last turns' `observation` with the chain; resume rebuilds it again |
 | `invalid_confirmation_threshold`, `session_opening_missing` | The indexer's `RunProblem` for the run ([ADR-059](decision_log.md)) | A defect in the run's configuration or the indexer's records; abort |
 | `settlement_check_failed` | A settlement's receipt did not show exactly the two signed legs (architecture 5.3) | Do not resume. Reconstruct the session (section 5) and compare |
+| `agent_outbound_context_refused` | An agent would have sent the model something private to it — its shared secret, model key, keystore password, root or a run key, or credential-shaped text — and refused the call; nothing was sent ([ADR-092](decision_log.md)). The agent's log line `outbound_context_refused` names the kind, never the text. A refusal on a repair attempt also loses that turn's earlier, sent attempt from the decision records, though not from the agent's budget | Look first at the run's own `instructions`: a secret pasted there is refused on every turn, so abort, and create the run again without it. A key in an observation is a backend defect. Resuming asks again and is refused again until the cause is gone |
 | `agent_<code>`, `observation_<code>` | An agent refused something the backend should never send, or the backend could not build an observation — the code says which ([ADR-064](decision_log.md)) | A defect; the turn is closed with the code as its `failure_code`. Resume once fixed, or abort |
 | `termination_reverted` | An abort or expiry reverted and the session is still open before its deadline | Look at the transaction's `last_error`. The termination stays recorded; once the deadline passes an abort sends `expireSession` |
 | `internal_error` | Something the driver did not expect; the exception is in the log line `run.driver_failed` | A defect. Resume once understood, or abort |

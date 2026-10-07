@@ -20,6 +20,7 @@ from agent_fakes import KeyedKeyHolder, ScriptedPolicy
 from agent_observations import FIXTURE, MANDATES, observation
 
 from agent.errors import InvalidStateError, ObservationInconsistentError, SessionMismatchError
+from agent.keys import RunSigner
 from agent.policy import Policy
 from agent.service import AgentService
 from agent.signing import ExpectedSession, SessionOpened, SetupBounds
@@ -34,7 +35,7 @@ EXPIRES_AT = int(CONFIG["expires_at"])
 
 
 def service(policy: ScriptedPolicy) -> AgentService:
-    def factory(request: Provisioning) -> Policy:
+    def factory(request: Provisioning, signer: RunSigner) -> Policy:
         return policy
 
     return AgentService(

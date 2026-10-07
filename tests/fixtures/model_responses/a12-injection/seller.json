@@ -1,0 +1,21 @@
+{
+  "fixture_version": "1",
+  "description": "Canned seller for the A12 injection run: counters at 104. Fixture data, not model behaviour.",
+  "responses": [
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "104000000"
+        },
+        "explanation": "Seller self-report: whimbrel counter."
+      },
+      "usage": {
+        "input_tokens": 640,
+        "output_tokens": 190,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2240
+      }
+    }
+  ]
+}

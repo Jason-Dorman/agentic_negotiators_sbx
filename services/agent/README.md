@@ -45,7 +45,8 @@ signer loaded ([runbook.md](../../docs/runbook.md) section 8).
 | `state/`, `observation.py` | Run-scoped memory; a typed view of a schema-valid observation |
 | `consistency.py` | Refuse an observation that contradicts itself or the approved session (ADR-046) |
 | `keys/references.py` | The grammar a key reference must satisfy, so a pasted key is refused (ADR-049) |
-| `model/` | `ModelClient` and its Anthropic implementation: the request, the decision envelope, every way a call ends as one `ModelOutcome`, the key by `env:` reference (ADR-086); the fixture client, canned answers on an instance configured for them (ADR-088); the runtime that gives each model run its own client and budget |
+| `model/` | `ModelClient` and its Anthropic implementation: the request, the decision envelope, every way a call ends as one `ModelOutcome`, the key by `env:` reference (ADR-086); the fixture client, canned answers on an instance configured for them (ADR-088); the runtime that gives each model run its own client and budget, behind `CheckedModelClient`, the outbound-context assertion (ADR-092) |
+| `outbound.py` | What no model request may carry: the instance's own secrets, its keys through `appears_in`, credential shapes; a hit is `422 outbound_context_refused` and nothing is sent (ADR-092) |
 | `prompting.py`, `prompts/` | The versioned prompt templates and their recorded version (ADR-029) |
 | `budget/` | `BudgetGuard`, the call and spend ceilings before each call, and the model price table (stage 3.1, ADR-085) |
 | `settings.py`, `logs.py`, `main.py` | `AGENT_*` configuration, redacted JSON logs, the composition root |
@@ -64,6 +65,9 @@ carries them as `agent/_prompts`. An instance runs the model policy live with
 backend and the relay, negotiate both scenarios on Anvil through the real contract.
 `tests/unit/test_model_client.py` drives the model client against a local server that answers as
 the provider does (`tests/support/fake_anthropic.py`), and `test_model_policy.py` drives the model
-policy through the real turn executor with a fake client; nothing in the suite reaches the network.
+policy through the real turn executor with a fake client; `test_outbound.py` holds the
+outbound-context assertion to what it refuses and what it lets through. Nothing in the suite reaches
+the network. Whole runs with both agents as processes and every model request scanned are the
+backend's isolation suite, `services/api/tests/isolation/` (A12).
 The validator
 and the signer are held to 100 percent of branches (`make coverage-python`).

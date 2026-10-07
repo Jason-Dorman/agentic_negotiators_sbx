@@ -13,11 +13,14 @@ A root reaches the holder as a reference, never as a value in configuration (ADR
 - `keystore:/path` decrypts a web3 keystore file with the password in `KEYSTORE_PASSWORD`. The
   Sepolia profile, exercised by the tests from stage 2 so that stage 5 adds no new code path.
 
-The root itself never signs anything (ADR-039).
+The root itself never signs anything (ADR-039). Each object answers one more question,
+`appears_in(text)` — whether a text holds the whole key — so that the outbound-context assertion
+can refuse a model request carrying it without the key leaving this module (ADR-092).
 """
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn, Protocol
@@ -52,6 +55,11 @@ class RunSigner(Protocol):
 
     def sign_transaction(self, transaction: Mapping[str, Any]) -> SignedTransaction: ...
 
+    def appears_in(self, text: str) -> bool:
+        """Whether the whole run key is in `text`, in hex of either case, with or without `0x`:
+        the outbound-context assertion's question (ADR-092). The answer is all it gives out."""
+        ...
+
 
 class KeyHolder(Protocol):
     @property
@@ -59,13 +67,24 @@ class KeyHolder(Protocol):
 
     def signer_for(self, derivation: KeyDerivation) -> RunSigner: ...
 
+    def appears_in(self, text: str) -> bool:
+        """Whether the whole root, or the whole of any run key it derived that is still in use, is
+        in `text`, as `RunSigner.appears_in` asks of one run key."""
+        ...
+
+
+def _hex_in(key: bytes, text: str) -> bool:
+    """The whole key, as hex, anywhere in `text` whatever its case. A part of it is not a match,
+    so the answer says nothing about the key beyond whether the text already holds all of it."""
+    return key.hex() in text.lower()
+
 
 def _refuse_serialisation(kind: str) -> NoReturn:
     raise TypeError(f"a {kind} cannot be serialised or copied: it would carry key material")
 
 
 class _LocalRunSigner:
-    __slots__ = ("_account", "_derivation")
+    __slots__ = ("__weakref__", "_account", "_derivation")
 
     def __init__(self, derivation: KeyDerivation, key: bytes) -> None:
         self._derivation = derivation
@@ -86,6 +105,9 @@ class _LocalRunSigner:
         signed = self._account.sign_transaction(dict(transaction))
         return SignedTransaction(bytes(signed.raw_transaction), Digest(bytes(signed.hash)))
 
+    def appears_in(self, text: str) -> bool:
+        return _hex_in(bytes(self._account.key), text)
+
     def __repr__(self) -> str:
         return f"RunSigner(address={self.address}, derivation={self._derivation})"
 
@@ -96,11 +118,13 @@ class _LocalRunSigner:
 class RootKeyHolder:
     """The `KeyHolder` for one agent instance, holding its root for the process lifetime."""
 
-    __slots__ = ("_key_ref", "_root")
+    __slots__ = ("_derived", "_key_ref", "_root")
 
     def __init__(self, key_ref: str, root: bytes) -> None:
         self._key_ref = key_ref
         self._root = root
+        #: Every run signer handed out and still referenced: a released run's goes with it.
+        self._derived: weakref.WeakSet[_LocalRunSigner] = weakref.WeakSet()
 
     @classmethod
     def from_ref(cls, key_ref: str, environ: Mapping[str, str]) -> RootKeyHolder:
@@ -111,7 +135,14 @@ class RootKeyHolder:
         return self._key_ref
 
     def signer_for(self, derivation: KeyDerivation) -> RunSigner:
-        return _LocalRunSigner(derivation, derive_run_key(self._root, derivation))
+        signer = _LocalRunSigner(derivation, derive_run_key(self._root, derivation))
+        self._derived.add(signer)
+        return signer
+
+    def appears_in(self, text: str) -> bool:
+        return _hex_in(self._root, text) or any(
+            signer.appears_in(text) for signer in list(self._derived)
+        )
 
     def __repr__(self) -> str:
         return f"RootKeyHolder(key_ref={self._key_ref!r})"

@@ -114,6 +114,44 @@ STRUCTURAL: tuple[Refusal, ...] = (
         "extra_fields",
         'Your response may contain only "decision" and an optional "explanation"; remove "a", "b".',
     ),
+    # ADR-092, Q92: a name is quoted back with credential-shaped text masked, so the repair
+    # message and the next observation cannot trip the outbound-context assertion.
+    Refusal(
+        "extra envelope field named like an Anthropic key: masked when quoted",
+        {**offer("80000000"), "sk-ant-" + "api03-planted_by_the_model": "x"},
+        "extra_fields",
+        'Your response may contain only "decision" and an optional "explanation"; '
+        'remove "[credential-shaped text]".',
+    ),
+    Refusal(
+        "extra envelope field holding a PEM header: only the header masked",
+        {**offer("80000000"), "x-----BEGIN EC PRIVATE" + " KEY-----y": "x"},
+        "extra_fields",
+        'Your response may contain only "decision" and an optional "explanation"; '
+        'remove "x[credential-shaped text]y".',
+    ),
+    Refusal(
+        "extra decision field quoting a keystore document: masked when quoted",
+        {
+            "decision": {
+                "action": "walk_away",
+                "reason": "terms_unacceptable",
+                '"crypto": {"ciphertext": 1}': 1,
+            }
+        },
+        "extra_fields",
+        'A walk_away decision may contain only "action" and "reason"; '
+        'remove ""crypto": {[credential-shaped text] 1}".',
+    ),
+    # The stage 3.3 review: masking each bare name missed one whose quotes, added by the feedback,
+    # complete a keystore document's `"ciphertext":`. The list is masked as quoted.
+    Refusal(
+        "extra envelope field the feedback's own quotes would make a keystore key: masked",
+        {**offer("80000000"), 'ciphertext":': 1},
+        "extra_fields",
+        'Your response may contain only "decision" and an optional "explanation"; '
+        'remove [credential-shaped text]".',
+    ),
     Refusal(
         "no decision",
         {"explanation": "thinking"},

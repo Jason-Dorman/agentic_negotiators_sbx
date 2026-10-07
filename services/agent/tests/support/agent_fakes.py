@@ -53,6 +53,9 @@ class KeyedRunSigner:
         signed = self._account.sign_transaction(dict(transaction))
         return SignedTransaction(bytes(signed.raw_transaction), Digest(bytes(signed.hash)))
 
+    def appears_in(self, text: str) -> bool:
+        return bytes(self._account.key).hex() in text.lower()
+
     @property
     def signatures_made(self) -> int:
         return len(self.digests_signed) + len(self.transactions_signed)
@@ -73,6 +76,10 @@ class KeyedKeyHolder:
         signer = KeyedRunSigner(FIXTURE_KEYS[derivation.role], derivation)
         self.signers.append(signer)
         return signer
+
+    def appears_in(self, text: str) -> bool:
+        """The fake has no root of its own: no text holds it."""
+        return False
 
     @property
     def signatures_made(self) -> int:

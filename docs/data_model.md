@@ -263,7 +263,7 @@ Unique: `(run_id, turn)`.
 | `model_id` | `TEXT NULL` | |
 | `effort` | `TEXT NULL` | |
 | `prompt_template_version` | `TEXT NULL` | |
-| `request_hash` | `TEXT NULL` | sha256 of the outbound request body, for A12 audit |
+| `request_hash` | `TEXT NULL` | sha256 of the outbound request body, for A12 audit. Not yet filled: the agent does not report it, so every row holds null (Q93) |
 | `raw_response` | `JSONB NOT NULL` | what the policy returned: the decision envelope as written, the JSON a model's text parses to, or the text itself; for a sent model call that ended without an answer, `{"error": {outcome, status, type, message, request_id}}` ([ADR-089](decision_log.md)). Each NUL stored as the text `\u0000` (ADR-090) |
 | `stop_reason` | `TEXT NULL` | `end_turn`, `refusal`, `max_tokens`, … Escaped with the record when one of its strings holds a NUL (ADR-090) |
 | `validation_ok` | `BOOLEAN NOT NULL` | |
@@ -528,7 +528,7 @@ for the operator's abort ([ADR-067](decision_log.md)). Model failure is recorded
 2. `signed_actions.sequence` for a run is contiguous from 1 with no gaps or duplicates among rows with status in `included`, `confirmed`, `finalized`.
 3. Every `signed_actions` row has at most one `tx_outbox` row not in `replaced`, `dropped`, `reverted`.
 4. Every `decisions` row with `authorized = true` has exactly one `signed_actions` row, and `validation_ok = true`.
-5. No `run_events.data`, no `turns.observation` for party X, and no outbound request hash for party X contains any value from `mandate_versions` for the other party. Checked with a leakage scanner in the integration suite (A12).
+5. No `run_events.data`, no `turns.observation` for party X, and no outbound request hash for party X contains any value from `mandate_versions` for the other party. Checked with a leakage scanner in the isolation suite (A12, `services/api/tests/isolation/test_a12_leakage.py`, stage 3.3), which scans every run event and each party's stored observations, and the requests each agent actually sent in place of their hash: `decisions.request_hash` is not yet filled (Q93).
 6. `chain_events` with `canonical = false` are excluded from every projection query. Enforced by a repository method that always filters, with no raw query allowed elsewhere.
 7. `runs.outcome_kind <> 'pending'` only when the terminal event's `chain_events` row is canonical with `confirmations_at_index >= threshold`. The indexer keeps `confirmations_at_index` current for every event above the finalized head ([ADR-053](decision_log.md)), so the comparison is with the event's depth, not its depth when first seen.
 
