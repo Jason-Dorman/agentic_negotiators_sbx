@@ -16,6 +16,10 @@ call is:
 5. one `ModelResult`, whichever way the call ended, with the guard told what it used — exactly once,
    and also when the call is cancelled, which then propagates (ADR-085).
 
+The caller may bound the whole of it, the token count included, with `within_s`: the turn's
+deadline less a margin for the answer to travel (ADR-089). A call cut short there is `timeout`,
+charged its estimate if it was admitted, rather than a cancellation.
+
 Only an exception that is not about the provider or the network escapes `decide`: cancellation, and
 a programming error. A body the endpoint would never send — not JSON, not a message, content of the
 wrong shape, a count no model could produce — is `provider_failure`, not an exception.
@@ -38,6 +42,7 @@ reach the decision record through `ModelResult` and nowhere else. The SDK's own 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -59,9 +64,20 @@ _MAX_TOKEN_COUNT: Final = 10_000_000
 
 class ModelClient(Protocol):
     async def decide(
-        self, system_prompt: str, observation: str, schema: type[BaseModel]
+        self,
+        system_prompt: str,
+        observation: str,
+        schema: type[BaseModel],
+        *,
+        repair: str | None = None,
+        within_s: float | None = None,
     ) -> ModelResult:
-        """One model call. Never raises for anything the provider or the network does."""
+        """One model call. Never raises for anything the provider or the network does.
+
+        `repair` is a repair attempt's own feedback, sent as a second text block after the
+        observation. `within_s` bounds the whole call, the token count included: a call still
+        unanswered then is a `timeout`, charged its estimate if it was admitted (ADR-089).
+        """
         ...
 
 
@@ -122,6 +138,14 @@ class _Charge:
         return self.reported_usd
 
 
+class _InFlight:
+    """What `decide` needs to know about a call the deadline cut short."""
+
+    def __init__(self) -> None:
+        self.charge: _Charge | None = None
+        self.started: float | None = None
+
+
 class AnthropicModelClient:
     def __init__(
         self,
@@ -137,9 +161,30 @@ class AnthropicModelClient:
         self._monotonic = monotonic
 
     async def decide(
-        self, system_prompt: str, observation: str, schema: type[BaseModel]
+        self,
+        system_prompt: str,
+        observation: str,
+        schema: type[BaseModel],
+        *,
+        repair: str | None = None,
+        within_s: float | None = None,
     ) -> ModelResult:
-        request = self._request(system_prompt, observation, schema)
+        request = self._request(system_prompt, observation, schema, repair)
+        call = _InFlight()
+        limit = asyncio.timeout(None if within_s is None else max(0.0, within_s))
+        try:
+            async with limit:
+                return await self._decide(request, schema, call)
+        except TimeoutError:
+            if not limit.expired():
+                raise
+            # The turn's deadline, not the provider: `_decide` has already charged an admitted
+            # call its estimate on the way out, as it does for any cancellation.
+            return self._past_deadline(call)
+
+    async def _decide(
+        self, request: Mapping[str, Any], schema: type[BaseModel], call: _InFlight
+    ) -> ModelResult:
         counted = await self._count_tokens(request)
         if isinstance(counted, ModelResult):
             return counted
@@ -148,14 +193,26 @@ class AnthropicModelClient:
             return ModelResult(
                 ModelOutcome.BUDGET_REFUSED, self._config.model_id, budget_refusal=admission
             )
-        charge = _Charge(self._guard, admission)
+        call.charge = _Charge(self._guard, admission)
+        call.started = self._monotonic()
         try:
-            return await self._call(request, charge, schema)
+            return await self._call(request, call.charge, schema)
         except BaseException:
             # Cancelled — by a deadline, say — or a programming error: the call may still have
             # been sent and billed, so it is charged its estimate before the exception propagates.
-            charge.settle(None)
+            call.charge.settle(None)
             raise
+
+    def _past_deadline(self, call: _InFlight) -> ModelResult:
+        charge = call.charge
+        return ModelResult(
+            ModelOutcome.TIMEOUT,
+            self._config.model_id,
+            cost_estimated_usd=None if charge is None else charge.admission.estimated_usd,
+            latency_ms=None if call.started is None else self._elapsed_ms(call.started),
+            provider_error=ProviderError(None, None, "no answer before the turn's deadline"),
+            sent=charge is not None,
+        )
 
     async def _call(
         self, request: Mapping[str, Any], charge: _Charge, schema: type[BaseModel]
@@ -176,16 +233,22 @@ class AnthropicModelClient:
         return self._answered(message, request_id, charge, self._elapsed_ms(started), schema)
 
     def _request(
-        self, system_prompt: str, observation: str, schema: type[BaseModel]
+        self, system_prompt: str, observation: str, schema: type[BaseModel], repair: str | None
     ) -> dict[str, Any]:
         """The request both endpoints are sent, `max_tokens` aside, which `count_tokens` has no
-        use for."""
+        use for. A repair is a second text block in the same user message: nothing but this
+        agent's own feedback is added, and the cached system prompt is unchanged."""
+        content: str | list[dict[str, str]] = (
+            observation
+            if repair is None
+            else [{"type": "text", "text": observation}, {"type": "text", "text": repair}]
+        )
         return {
             "model": self._config.model_id,
             "system": [
                 {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
             ],
-            "messages": [{"role": "user", "content": observation}],
+            "messages": [{"role": "user", "content": content}],
             "thinking": {"type": "adaptive"},
             "output_config": {
                 "effort": self._config.effort,
@@ -229,7 +292,7 @@ class AnthropicModelClient:
             return self._malformed(charge, request_id, latency_ms)
         reported = charge.settle(usage)
         text = "".join(texts) or None
-        outcome, decision = _sort_answer(stop_reason, text, schema)
+        outcome, decision = sort_answer(stop_reason, text, schema)
         return ModelResult(
             outcome,
             self._config.model_id,
@@ -242,6 +305,7 @@ class AnthropicModelClient:
             cost_reported_usd=reported,
             request_id=request_id,
             latency_ms=latency_ms,
+            sent=True,
         )
 
     def _failed(
@@ -259,6 +323,7 @@ class AnthropicModelClient:
             request_id=getattr(error, "request_id", None),
             latency_ms=latency_ms,
             provider_error=provider_error,
+            sent=charge is not None,
         )
 
     def _malformed(
@@ -276,15 +341,18 @@ class AnthropicModelClient:
             provider_error=ProviderError(
                 200, None, "the response body is not what the endpoint returns"
             ),
+            sent=charge is not None,
         )
 
     def _elapsed_ms(self, started: float) -> int:
         return max(0, round((self._monotonic() - started) * 1000))
 
 
-def _sort_answer(
+def sort_answer(
     stop_reason: str | None, text: str | None, schema: type[BaseModel]
 ) -> tuple[ModelOutcome, Mapping[str, Any] | None]:
+    """An answered call's outcome, and the decision as the model wrote it when it is one. The
+    fixture client sorts its canned answers with this too, so they are judged as a real one is."""
     if stop_reason == "refusal":
         return ModelOutcome.REFUSAL, None
     if stop_reason == "max_tokens":

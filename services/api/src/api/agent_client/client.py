@@ -97,6 +97,8 @@ class AgentHealth(_Strict):
     instance: str
     policy_kinds: list[str]
     model_ok: bool
+    #: ADR-088: `fixture` when the instance answers its model runs from canned responses.
+    model_mode: Literal["live", "fixture"] | None
     signer_ok: bool
 
 

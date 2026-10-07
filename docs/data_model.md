@@ -4,7 +4,7 @@
 |---|---|
 | **Version** | 0.1.0 |
 | **Date** | 25 September 2026 |
-| **Status** | Built in stage 2.1; migration 0002 added two `tx_outbox` columns in stage 2.3, migration 0003 two `runs` columns in stage 2.4, and migration 0004 three `run_metrics` columns and `deployments.genesis_hash` in stage 2.5. The Alembic migrations in `services/api/src/api/db/migrations/` are authoritative, and this document is checked against them by `test_db_schema_matches_data_model.py` |
+| **Status** | Built in stage 2.1; migration 0002 added two `tx_outbox` columns in stage 2.3, migration 0003 two `runs` columns in stage 2.4, migration 0004 three `run_metrics` columns and `deployments.genesis_hash` in stage 2.5, and migration 0005 `decisions.raw_response_escaped` in stage 3.2. The Alembic migrations in `services/api/src/api/db/migrations/` are authoritative, and this document is checked against them by `test_db_schema_matches_data_model.py` |
 | **Source** | Spec sections 9.1, 9.3, 11.3 |
 | **Related** | [protocol.md](protocol.md), [api_contract.md](api_contract.md), [architecture.md](architecture.md), [security_and_trust_boundaries.md](security_and_trust_boundaries.md) |
 
@@ -139,7 +139,7 @@ are committed.
 | `software_version` | `TEXT NOT NULL` | `0.1.0+gitsha` |
 | `state` | `run_state NOT NULL` | operational |
 | `state_cause` | `TEXT NULL` | |
-| `mode` | `run_mode NOT NULL DEFAULT 'live'` | `live` or `fixture` |
+| `mode` | `run_mode NOT NULL DEFAULT 'live'` | `live` or `fixture`. Written at setup validation from the agents' health: `fixture` when an agent that runs a party's model policy reports `model_mode: "fixture"` ([ADR-088](decision_log.md)) |
 | `outcome_kind` | `outcome_kind NOT NULL DEFAULT 'pending'` | economic |
 | `outcome_reason_code` | `SMALLINT NULL` | protocol code |
 | `outcome_actor` | `party_or_operator NULL` | |
@@ -247,7 +247,7 @@ take one and no two callers can take the same one.
 | `observation_hash` | `TEXT NOT NULL` | `0x` + sha256 of canonical JSON |
 | `started_at` | `TIMESTAMPTZ NOT NULL DEFAULT now()` | |
 | `finished_at` | `TIMESTAMPTZ NULL` | |
-| `failure_code`, `failure_detail` | `TEXT NULL` | why a turn ended other than confirmed (stage 2.4): the agent's `failure.code` for a model failure (`repair_exhausted`, …); `reverted`, with the decoded error as the detail, for an execution failure; `observation_inconsistent`, with the fields the agent named, for a refused observation — the next try is a new turn with a fresh observation (ADR-046); `observation_stale` for a stored observation not asked again after its offer or session expired ([ADR-071](decision_log.md)); `termination_requested` for a decision that arrived after a termination was recorded, kept only as a private decision record ([ADR-070](decision_log.md)); `session_deadline_passed`; `session_ended` for a turn the session's end overtook; or the code of an agent refusal that sent the run to `RECOVERY_REQUIRED` (ADR-064) |
+| `failure_code`, `failure_detail` | `TEXT NULL` | why a turn ended other than confirmed (stage 2.4): the agent's `failure.code` for a model failure (`repair_exhausted`, …); `reverted`, with the decoded error as the detail, for an execution failure; `observation_inconsistent`, with the fields the agent named, for a refused observation — the next try is a new turn with a fresh observation (ADR-046); `observation_stale` for a stored observation not asked again after its offer or session expired ([ADR-071](decision_log.md)); `termination_requested` for a decision that arrived after a termination was recorded, kept only as a private decision record ([ADR-070](decision_log.md)); `session_deadline_passed`; `session_ended` for a turn the session's end overtook; or the code of an agent refusal that sent the run to `RECOVERY_REQUIRED` (ADR-064). A NUL in either, which an agent's failure can quote from a provider's error type, is stored as `\u0000` with each backslash doubled ([ADR-090](decision_log.md)) |
 
 Unique: `(run_id, turn)`.
 
@@ -264,10 +264,10 @@ Unique: `(run_id, turn)`.
 | `effort` | `TEXT NULL` | |
 | `prompt_template_version` | `TEXT NULL` | |
 | `request_hash` | `TEXT NULL` | sha256 of the outbound request body, for A12 audit |
-| `raw_response` | `JSONB NOT NULL` | decision envelope as returned, or error text |
-| `stop_reason` | `TEXT NULL` | `end_turn`, `refusal`, `max_tokens`, … |
+| `raw_response` | `JSONB NOT NULL` | what the policy returned: the decision envelope as written, the JSON a model's text parses to, or the text itself; for a sent model call that ended without an answer, `{"error": {outcome, status, type, message, request_id}}` ([ADR-089](decision_log.md)). Each NUL stored as the text `\u0000` (ADR-090) |
+| `stop_reason` | `TEXT NULL` | `end_turn`, `refusal`, `max_tokens`, … Escaped with the record when one of its strings holds a NUL (ADR-090) |
 | `validation_ok` | `BOOLEAN NOT NULL` | |
-| `validation_code` | `TEXT NULL` | one of the closed set in [protocol.md](protocol.md) section 11.1, e.g. `below_reservation`, `stale_offer_hash`, `schema_error`; null when the attempt passed |
+| `validation_code` | `TEXT NULL` | one of the closed set in [protocol.md](protocol.md) section 11.1, e.g. `below_reservation`, `stale_offer_hash`, `schema_error`; null when the attempt passed, and when it ended without an answer to validate (ADR-089) |
 | `validation_feedback` | `TEXT NULL` | the private feedback text sent back on repair |
 | `usage` | `JSONB NULL` | `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, as the provider reported them |
 | `cost_estimated_usd` | `NUMERIC(12,6) NULL` | the call's pre-call bound, priced from the model price table ([ADR-085](decision_log.md)); null when the model is unpriced, displayed as unknown |
@@ -275,6 +275,7 @@ Unique: `(run_id, turn)`.
 | `latency_ms` | `INTEGER NULL` | `CHECK >= 0` |
 | `requested_at` | `TIMESTAMPTZ NOT NULL` | |
 | `authorized` | `BOOLEAN NOT NULL DEFAULT false` | true only when this attempt became a signed action. `CHECK (NOT authorized OR validation_ok)`: an attempt that failed validation can never be the one that authorised an action (invariant 4) |
+| `raw_response_escaped` | `BOOLEAN NOT NULL DEFAULT false` | true when `raw_response`, `stop_reason` or `validation_feedback` held a NUL, which JSONB and TEXT refuse. Every string of the three is then escaped — each backslash doubled, each NUL written as the six characters `\u0000` — so the escape is reversible (migration 0005, [ADR-090](decision_log.md), Q71) |
 
 Unique: `(turn_id, attempt)`. Index: `(run_id)`.
 

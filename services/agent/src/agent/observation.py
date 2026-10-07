@@ -13,14 +13,14 @@ whole string and refuses it, and so a document the schema let through can still 
 `ProtocolValueError`. The caller treats that as the malformed request it is.
 
 Only what a policy or the validator reads is typed here. `my_previous_decisions` is not: the
-deterministic policy has no use for it, and the model policy of stage 3 reads the observation as the
-document it sends.
+deterministic policy has no use for it, and the model policy reads the observation as the document
+it sends, which `document` keeps exactly as it was validated, mandate included.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 from uuid import UUID
 
@@ -166,6 +166,8 @@ class Observation:
     history: tuple[HistoryEntry, ...]
     my_balances: Balances
     mandate: Mandate
+    #: The schema-valid document this view was built from, mandate included. Private.
+    document: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> Observation:
@@ -182,6 +184,7 @@ class Observation:
             history=tuple(HistoryEntry.from_json(entry) for entry in data["history"]),
             my_balances=Balances.from_json(data["my_balances"]),
             mandate=Mandate.from_json(data["mandate"]),
+            document=dict(data),
         )
 
     def offers_recorded(self) -> int:

@@ -1,0 +1,36 @@
+{
+  "fixture_version": "1",
+  "description": "Canned buyer for default-overlap: opens at 90, concedes to 94, and is accepted. Fixture data, not model behaviour.",
+  "responses": [
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "90000000"
+        },
+        "explanation": "Opening low to leave room to concede."
+      },
+      "usage": {
+        "input_tokens": 620,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2150
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "94000000"
+        },
+        "explanation": "Conceding part of the gap."
+      },
+      "usage": {
+        "input_tokens": 680,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 2150,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}

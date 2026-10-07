@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -175,7 +177,7 @@ def turn_body(address: str, turn: int = 1, run_id: str = RUN, **changes: Any) ->
         {"session_id": SESSION_ID, "expires_at": EXPIRES_AT, "config_hash": _config_hash(address)}
     )
     document.update(changes)
-    return {**document, "turn": turn, "deadline_at": "2026-09-30T12:00:45.000Z"}
+    return {**document, "turn": turn, "deadline_at": "2099-09-30T12:00:45.000Z"}
 
 
 def _config_hash(address: str) -> str:
@@ -204,6 +206,7 @@ async def test_a_correctly_signed_health_check_is_answered(agent: Agent) -> None
         "instance": "agent-a",
         "policy_kinds": ["deterministic"],
         "model_ok": False,
+        "model_mode": None,
         "signer_ok": True,
     }
     assert response.headers[REQUEST_ID_HEADER] == "req-1"
@@ -959,3 +962,201 @@ async def test_a_mismatched_amount_is_reported_as_a_decimal_string(agent: Agent)
 
 def test_the_run_id_constant_is_a_uuid() -> None:
     assert str(UUID(RUN)) == RUN
+
+
+# --------------------------------------------------------------------------------------
+# The model policy (stage 3.2): fixture and live instances, ADR-088 and ADR-089
+# --------------------------------------------------------------------------------------
+
+MODEL_FIXTURES = Path(__file__).resolve().parents[4] / "tests" / "fixtures" / "model_responses"
+MODEL_KEY = "sk-ant-api03-" + "m" * 40
+
+
+@asynccontextmanager
+async def instance(environ: dict[str, str] | None = None, **overrides: Any) -> AsyncIterator[Agent]:
+    app = create_app(settings(**overrides), environ={"BUYER_ROOT_KEY": ROOT, **(environ or {})})
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://agent-a") as client:
+        yield Agent(client)
+
+
+def model_body(**overrides: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {"model_id": "claude-sonnet-5-5", "effort": "high", **overrides}
+    return provision_body(policy="model", **values)
+
+
+async def health(agent: Agent) -> dict[str, Any]:
+    response = await agent.call("GET", "/internal/health")
+    assert response.status_code == 200
+    body: dict[str, Any] = response.json()
+    return body
+
+
+async def test_a_fixture_instance_offers_the_model_and_says_it_is_canned() -> None:
+    async with instance(model_fixtures=MODEL_FIXTURES / "default-overlap-settles") as agent:
+        body = await health(agent)
+    assert body["policy_kinds"] == ["deterministic", "model"]
+    assert body["model_ok"] is True
+    assert body["model_mode"] == "fixture"
+
+
+async def test_a_live_instance_with_its_key_reports_live_without_calling_anyone() -> None:
+    async with instance(
+        {"BUYER_ANTHROPIC_API_KEY": MODEL_KEY}, model_key_ref="env:BUYER_ANTHROPIC_API_KEY"
+    ) as agent:
+        body = await health(agent)
+    assert body["policy_kinds"] == ["deterministic", "model"]
+    assert (body["model_ok"], body["model_mode"]) == (True, "live")
+
+
+@pytest.mark.parametrize(
+    ("environ", "overrides", "mode"),
+    [
+        ({}, {"model_key_ref": "env:BUYER_ANTHROPIC_API_KEY"}, "live"),
+        ({}, {"model_fixtures": Path("/nonexistent/fixtures")}, "fixture"),
+        (
+            {"BUYER_ANTHROPIC_API_KEY": MODEL_KEY},
+            {
+                "model_key_ref": "env:BUYER_ANTHROPIC_API_KEY",
+                "model_price_table": Path("/nonexistent/prices.json"),
+            },
+            "live",
+        ),
+    ],
+    ids=["key_unset", "fixtures_missing", "price_table_missing"],
+)
+async def test_a_model_that_did_not_load_is_reported_and_refused_at_provisioning(
+    environ: dict[str, str], overrides: dict[str, Any], mode: str
+) -> None:
+    async with instance(environ, **overrides) as agent:
+        body = await health(agent)
+        assert body["policy_kinds"] == ["deterministic", "model"]
+        assert (body["model_ok"], body["model_mode"]) == (False, mode)
+        response = await agent.post(RUN, "provision", model_body())
+        assert response.status_code == 503
+        assert error_of(response)["details"]["dependency"] == "model"
+        # The deterministic policy is unaffected.
+        assert (await agent.post(OTHER_RUN, "provision", provision_body())).status_code == 200
+
+
+async def test_an_instance_with_no_model_refuses_a_model_run() -> None:
+    async with instance() as agent:
+        response = await agent.post(RUN, "provision", model_body())
+    assert response.status_code == 422
+    assert error_of(response)["details"]["fields"] == {"policy": "one of: deterministic"}
+
+
+async def test_a_model_run_names_its_model_and_effort() -> None:
+    async with instance(model_fixtures=MODEL_FIXTURES / "default-overlap-settles") as agent:
+        response = await agent.post(RUN, "provision", model_body(model_id=None, effort=None))
+    assert response.status_code == 422
+    assert set(error_of(response)["details"]["fields"]) == {"model_id", "effort"}
+
+
+def test_an_instance_is_live_or_fixture_never_both() -> None:
+    with pytest.raises(ValueError, match="never both"):
+        settings(
+            model_key_ref="env:BUYER_ANTHROPIC_API_KEY",
+            model_fixtures=MODEL_FIXTURES / "default-overlap-settles",
+        )
+
+
+async def test_a_fixture_model_turn_is_signed_with_its_usage_and_cost_recorded() -> None:
+    async with instance(model_fixtures=MODEL_FIXTURES / "default-overlap-settles") as agent:
+        provisioned_response = await agent.post(RUN, "provision", model_body())
+        assert provisioned_response.status_code == 200
+        address = provisioned_response.json()["my_address"]
+        assert provisioned_response.json()["policy_version"] == "model-1.0.0"
+        template_version = provisioned_response.json()["prompt_template_version"]
+        assert template_version.startswith("v1.0.0+")
+        assert (await agent.post(RUN, "approve-session", opened_body(address))).status_code == 200
+        response = await agent.post(RUN, "turn", turn_body(address, active_offer=None))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "signed"
+    assert body["signed_action"]["typed_message"]["quoteAmount"] == "90000000"
+    [decision] = body["decisions"]
+    assert decision["usage"] == {
+        "input_tokens": 620,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2150,
+    }
+    # 620 x $2 + 180 x $10 + 2,150 x $2.50 a million; the bound: 2,770 x $4 + 16,000 x $10.
+    assert decision["cost_reported_usd"] == "0.008415"
+    assert decision["cost_estimated_usd"] == "0.171080"
+    assert decision["prompt_template_version"] == template_version
+    assert decision["stop_reason"] == "end_turn"
+
+
+async def test_a_model_turn_past_its_deadline_calls_nothing_and_fails_timeout() -> None:
+    async with instance(model_fixtures=MODEL_FIXTURES / "default-overlap-settles") as agent:
+        response = await agent.post(RUN, "provision", model_body())
+        address = response.json()["my_address"]
+        await agent.post(RUN, "approve-session", opened_body(address))
+        body = turn_body(address, active_offer=None)
+        body["deadline_at"] = "2020-01-01T00:00:00.000Z"
+        response = await agent.post(RUN, "turn", body)
+    assert response.status_code == 200
+    assert response.json()["status"] == "model_failed"
+    assert response.json()["failure"]["code"] == "timeout"
+    assert response.json()["decisions"] == []
+
+
+# --------------------------------------------------------------------------------------
+# What the adversarial review of stage 3.2 found at this layer
+# --------------------------------------------------------------------------------------
+
+
+async def test_an_answer_that_cannot_be_encoded_is_logged_as_the_500_it_is(
+    logged_agent: Agent, log_stream: io.StringIO, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The request line was written with status 200 before the body failed to render."""
+    from agent.service import AgentService
+
+    def unencodable(self: AgentService) -> dict[str, Any]:
+        return {"status": "ok", "note": "\ud800"}
+
+    monkeypatch.setattr(AgentService, "health", unencodable)
+    response = await logged_agent.call("GET", "/internal/health", request_id="req-10")
+    assert response.status_code == 500
+    request_lines = [
+        json.loads(line)
+        for line in log_stream.getvalue().splitlines()
+        if '"event": "request"' in line and "req-10" in line
+    ]
+    assert [line["status"] for line in request_lines] == [500]
+
+
+async def test_a_model_run_without_its_model_is_refused_422_before_a_missing_model_503() -> None:
+    """api_contract 6's order: the malformed request first, then the instance's dependency."""
+    async with instance(model_fixtures=Path("/nonexistent/fixtures")) as agent:
+        response = await agent.post(RUN, "provision", model_body(model_id=None))
+    assert response.status_code == 422
+    assert set(error_of(response)["details"]["fields"]) == {"model_id"}
+
+
+async def test_a_prompt_template_that_does_not_load_leaves_the_model_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.prompting import PromptTemplate, PromptTemplateError
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise PromptTemplateError("prompt template v1.0.0 has an unknown placeholder")
+
+    monkeypatch.setattr(PromptTemplate, "load", broken)
+    async with instance(model_fixtures=MODEL_FIXTURES / "default-overlap-settles") as agent:
+        body = await health(agent)
+        response = await agent.post(RUN, "provision", model_body())
+    assert (body["model_ok"], body["model_mode"]) == (False, "fixture")
+    assert response.status_code == 503
+    assert error_of(response)["details"] == {
+        "dependency": "model",
+        "reason": "prompt template v1.0.0 has an unknown placeholder",
+    }
+
+
+def test_an_empty_fixture_directory_setting_is_unset() -> None:
+    """infra/.env.example ships `AGENT_MODEL_FIXTURES=`; that is no fixtures, never `Path(".")`."""
+    assert settings(model_fixtures="").model_fixtures is None

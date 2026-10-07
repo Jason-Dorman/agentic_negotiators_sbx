@@ -1,0 +1,51 @@
+{
+  "fixture_version": "1",
+  "description": "Canned buyer whose answers each report 15,000 output tokens, so a run with a $0.40 spend ceiling refuses its third call and aborts with reason 3. Fixture data, not model behaviour.",
+  "responses": [
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "85000000"
+        },
+        "explanation": "Opening low."
+      },
+      "usage": {
+        "input_tokens": 620,
+        "output_tokens": 15000,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2150
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "88000000"
+        },
+        "explanation": "Conceding a little."
+      },
+      "usage": {
+        "input_tokens": 680,
+        "output_tokens": 15000,
+        "cache_read_input_tokens": 2150,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "91000000"
+        },
+        "explanation": "Never reached: the budget refuses this call."
+      },
+      "usage": {
+        "input_tokens": 680,
+        "output_tokens": 15000,
+        "cache_read_input_tokens": 2150,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}

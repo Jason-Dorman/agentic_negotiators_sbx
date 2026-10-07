@@ -512,6 +512,10 @@ class Decision(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     requested_at: Mapped[datetime] = mapped_column(TIMESTAMP, nullable=False)
     authorized: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # Migration 0005 (ADR-090, Q71): a NUL in the response or its feedback was stored as `\u0000`.
+    raw_response_escaped: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

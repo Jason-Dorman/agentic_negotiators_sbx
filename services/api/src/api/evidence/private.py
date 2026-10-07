@@ -119,6 +119,7 @@ def decision_records(
                 by_id[decision.turn_id].observation_hash if decision.turn_id in by_id else None
             ),
             "authorized": decision.authorized,
+            "raw_response_escaped": decision.raw_response_escaped,
             "label": DECISION_LABEL,
         }
         for decision in _ordered(decisions, by_id)

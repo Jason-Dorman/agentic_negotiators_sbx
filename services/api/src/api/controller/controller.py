@@ -317,6 +317,11 @@ class RunController:
     async def validate(self, run_id: uuid.UUID) -> ValidationReport:
         run = await self._require(run_id, "validate", (DRAFT, VALIDATED))
         report = await self._validator.validate(run)
+        if report.mode != run.mode:
+            # ADR-088: the agents say whether the run's model decisions are canned; every surface
+            # labels the run from this column.
+            async with self._transactions.unit_of_work() as uow:
+                await uow.runs.set_mode(run_id, report.mode)
         target = VALIDATED if report.ok else DRAFT
         if target != run.state:
             await self._states.move(

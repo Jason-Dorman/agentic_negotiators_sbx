@@ -56,8 +56,11 @@ def run_body(
     *,
     threshold: int | None = 1,
     scenario_id: str | None = None,
+    model_id: str | None = None,
+    limits: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """`POST /v1/runs` for a scenario file, both parties deterministic, as JSON."""
+    """`POST /v1/runs` for a scenario file, as JSON: both parties deterministic, or both on the
+    model policy at high effort when `model_id` is given."""
     document = scenario(name)
     public = dict(document["public_config"])
     if threshold is not None:
@@ -66,9 +69,9 @@ def run_body(
     def party(role: str) -> dict[str, Any]:
         template = document[role]
         return {
-            "policy": "deterministic",
-            "model_id": None,
-            "effort": None,
+            "policy": "deterministic" if model_id is None else "model",
+            "model_id": model_id,
+            "effort": None if model_id is None else "high",
             "initial_balances": template["initial_balances"],
             "allowance_minor": template["allowance_minor"],
             "mandate": template["mandate"],
@@ -81,7 +84,7 @@ def run_body(
         "public_config": public,
         "buyer": party("buyer"),
         "seller": party("seller"),
-        "limits": dict(LIMITS),
+        "limits": {**LIMITS, **(limits or {})},
         "parent_run_id": None,
     }
 

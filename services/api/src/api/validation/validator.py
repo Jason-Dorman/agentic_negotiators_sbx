@@ -8,6 +8,12 @@ The chain is checked against the manifest rather than trusted (spec section 8): 
 the manifest's and one of the two this sandbox runs on, and the runtime bytecode at each of the
 three addresses must hash to the manifest's `code_hashes`. A run whose `confirmation_threshold` is
 not an integer of at least 1 is refused here, before anything is recorded under it (ADR-059).
+
+The report also says how the run's model decisions will be made (ADR-088): `fixture` when an agent
+that runs a party's model policy reports `model_mode: "fixture"` in its health — canned responses
+by that instance's own configuration — and `live` otherwise. The controller records it as
+`runs.mode`, so every surface labels a canned run as one. One fixture party is enough: a run with
+any canned decision is not evidence of autonomous behaviour.
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from eth_utils.crypto import keccak
 from api.agent_client import AgentClient, AgentError
 from api.chain import ChainAdapter, RpcUnavailableError
 from api.config import InvalidRunConfigError, confirmation_threshold
-from api.db.enums import Party, PolicyKind
+from api.db.enums import Party, PolicyKind, RunMode
 from api.db.protocols import Transactions
 from api.db.records import DeploymentRecord, RunRecord, WalletRecord
 from negotiation_protocol import Address, Digest
@@ -46,6 +52,8 @@ class Check:
 @dataclass(frozen=True, slots=True)
 class ValidationReport:
     checks: tuple[Check, ...]
+    #: ADR-088: how the run's model decisions will be made, from the agents' own health.
+    mode: RunMode = RunMode.LIVE
 
     @property
     def ok(self) -> bool:
@@ -76,10 +84,13 @@ class SetupValidator:
             wallets = {wallet.party: wallet for wallet in await uow.wallets.list_for_run(run.id)}
         checks = [self._deployment_check(run), self._threshold_check(run)]
         checks += await self._chain_checks()
+        fixture = False
         for party in (Party.BUYER, Party.SELLER):
-            checks += await self._agent_checks(run, party)
+            agent_checks, canned = await self._agent_checks(run, party)
+            checks += agent_checks
+            fixture = fixture or canned
             checks.append(_wallet_check(party, wallets.get(party)))
-        return ValidationReport(tuple(checks))
+        return ValidationReport(tuple(checks), RunMode.FIXTURE if fixture else RunMode.LIVE)
 
     def _deployment_check(self, run: RunRecord) -> Check:
         expected = self._deployment.deployment_id
@@ -127,12 +138,13 @@ class SetupValidator:
         balance = await self._chain.eth_balance(address, block)
         return Check(f"{name}_eth_balance", balance > 0, f"{balance} wei")
 
-    async def _agent_checks(self, run: RunRecord, party: Party) -> list[Check]:
+    async def _agent_checks(self, run: RunRecord, party: Party) -> tuple[list[Check], bool]:
+        """The party's agent checks, and whether its model policy answers from fixtures."""
         name = f"{party.value}_agent"
         try:
             health = await self._agents[party].health()
         except AgentError as error:
-            return [Check(name, False, f"unreachable: {type(error).__name__}")]
+            return [Check(name, False, f"unreachable: {type(error).__name__}")], False
         policy = run.buyer_policy if party == Party.BUYER else run.seller_policy
         problems = []
         if health.role != party.value:
@@ -142,9 +154,10 @@ class SetupValidator:
         if policy.value not in health.policy_kinds:
             problems.append(f"cannot run a {policy.value} policy")
         checks = [Check(name, not problems, "; ".join(problems) or health.instance)]
-        if policy == PolicyKind.MODEL:
-            checks.append(Check(f"{name}_model_available", health.model_ok))
-        return checks
+        if policy != PolicyKind.MODEL:
+            return checks, False
+        checks.append(Check(f"{name}_model_available", health.model_ok, health.model_mode))
+        return checks, health.model_mode == "fixture"
 
 
 #: The three contracts whose bytecode is checked, and where each one's address is recorded.

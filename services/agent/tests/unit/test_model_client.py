@@ -734,3 +734,184 @@ def test_token_count_answers_are_what_the_fake_sends_by_default() -> None:
     assert json.loads(token_count(1_200).body) == {"input_tokens": 1_200}
     assert SONNET is not None
     assert SONNET.bound_usd(1_200, 16_000) == BOUND
+
+
+# ---------------------------------------------------------------------------------------------
+# Stage 3.2: a repair's feedback block, and the turn's deadline over the whole call (ADR-089)
+# ---------------------------------------------------------------------------------------------
+
+REPAIR = "REPAIR-MARKER: your previous answer was refused."
+
+
+async def test_a_repair_is_a_second_text_block_after_the_observation_in_both_requests(
+    fake: FakeAnthropic, base_url: str
+) -> None:
+    client = AnthropicModelClient(
+        anthropic_sdk(SecretStr(KEY), base_url=base_url), config(), guard()
+    )
+    await client.decide(SYSTEM_PROMPT, OBSERVATION, DecisionEnvelope, repair=REPAIR)
+
+    for request in fake.received:
+        assert request.body["messages"] == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": OBSERVATION},
+                    {"type": "text", "text": REPAIR},
+                ],
+            }
+        ]
+        # The system prompt and its cache breakpoint are unchanged by a repair.
+        assert request.body["system"] == [
+            {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}
+        ]
+
+
+async def test_a_first_attempt_sends_the_observation_alone(
+    fake: FakeAnthropic, base_url: str
+) -> None:
+    await decide(base_url)
+    for request in fake.received:
+        assert request.body["messages"] == [{"role": "user", "content": OBSERVATION}]
+
+
+async def test_a_call_unanswered_by_the_deadline_is_a_timeout_charged_its_estimate(
+    fake: FakeAnthropic, base_url: str
+) -> None:
+    fake.script(MESSAGES, Answer(delay_s=None))
+    budget = guard()
+    client = AnthropicModelClient(
+        anthropic_sdk(SecretStr(KEY), base_url=base_url), config(timeout_s=30.0), budget
+    )
+
+    result = await client.decide(SYSTEM_PROMPT, OBSERVATION, DecisionEnvelope, within_s=0.5)
+
+    assert result.outcome is ModelOutcome.TIMEOUT
+    assert result.sent
+    assert result.cost_estimated_usd == BOUND
+    assert result.cost_reported_usd is None
+    assert result.usage is None
+    assert result.latency_ms is not None and 400 <= result.latency_ms < 5_000
+    assert len(fake.requests_to(MESSAGES)) == 1
+    assert budget.calls == 1
+    assert budget.spent_usd == BOUND
+
+
+async def test_a_deadline_reached_while_counting_tokens_sends_and_charges_nothing(
+    fake: FakeAnthropic, base_url: str
+) -> None:
+    fake.script(COUNT_TOKENS, Answer(delay_s=None))
+    budget = guard()
+    client = AnthropicModelClient(
+        anthropic_sdk(SecretStr(KEY), base_url=base_url), config(timeout_s=30.0), budget
+    )
+
+    result = await client.decide(SYSTEM_PROMPT, OBSERVATION, DecisionEnvelope, within_s=0.5)
+
+    assert result.outcome is ModelOutcome.TIMEOUT
+    assert not result.sent
+    assert result.cost_estimated_usd is None
+    assert fake.requests_to(MESSAGES) == []
+    assert budget.calls == 0
+    assert budget.spent_usd == 0
+
+
+async def test_no_time_left_sends_nothing(fake: FakeAnthropic, base_url: str) -> None:
+    budget = guard()
+    client = AnthropicModelClient(
+        anthropic_sdk(SecretStr(KEY), base_url=base_url), config(), budget
+    )
+    result = await client.decide(SYSTEM_PROMPT, OBSERVATION, DecisionEnvelope, within_s=-1.0)
+    assert result.outcome is ModelOutcome.TIMEOUT
+    assert not result.sent
+    assert fake.requests_to(MESSAGES) == []
+    assert budget.calls == 0
+
+
+async def test_a_deadline_with_time_to_spare_changes_nothing(
+    fake: FakeAnthropic, base_url: str
+) -> None:
+    client = AnthropicModelClient(
+        anthropic_sdk(SecretStr(KEY), base_url=base_url), config(), guard()
+    )
+    result = await client.decide(SYSTEM_PROMPT, OBSERVATION, DecisionEnvelope, within_s=30.0)
+    assert result.outcome is ModelOutcome.DECIDED
+    assert result.sent
+
+
+async def test_a_cancellation_from_outside_still_propagates_under_a_deadline(
+    fake: FakeAnthropic, base_url: str
+) -> None:
+    """Only the deadline's own expiry becomes a timeout; any other cancellation is not swallowed."""
+    fake.script(MESSAGES, Answer(delay_s=None))
+    budget = guard()
+    client = AnthropicModelClient(
+        anthropic_sdk(SecretStr(KEY), base_url=base_url), config(timeout_s=30.0), budget
+    )
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            client.decide(SYSTEM_PROMPT, OBSERVATION, DecisionEnvelope, within_s=30.0), 0.5
+        )
+    assert budget.spent_usd == BOUND
+
+
+@pytest.mark.parametrize(
+    ("answer", "sent"),
+    [
+        (provider_error(529, "overloaded_error"), True),
+        (Answer(200, b"not json"), True),
+    ],
+    ids=["provider_failure", "malformed"],
+)
+async def test_a_failed_admitted_call_says_it_was_sent(
+    fake: FakeAnthropic, base_url: str, answer: Answer, sent: bool
+) -> None:
+    fake.script(MESSAGES, answer)
+    result, _ = await decide(base_url)
+    assert result.sent is sent
+
+
+async def test_a_failed_token_count_says_nothing_was_sent(
+    fake: FakeAnthropic, base_url: str
+) -> None:
+    fake.script(COUNT_TOKENS, provider_error(500, "api_error"))
+    result, _ = await decide(base_url)
+    assert result.outcome is ModelOutcome.PROVIDER_FAILURE
+    assert not result.sent
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [Answer(200, b"not json"), json_answer(200, {"input_tokens": -1})],
+    ids=["not_json", "impossible_count"],
+)
+async def test_a_malformed_token_count_sends_and_charges_nothing(
+    fake: FakeAnthropic, base_url: str, answer: Answer
+) -> None:
+    fake.script(COUNT_TOKENS, answer)
+    result, budget = await decide(base_url)
+    assert result.outcome is ModelOutcome.PROVIDER_FAILURE
+    assert not result.sent
+    assert fake.requests_to(MESSAGES) == []
+    assert budget.calls == 0
+
+
+class _RaisingSdk:
+    """An SDK whose token count raises a builtin TimeoutError that is not the deadline's."""
+
+    def with_options(self, **kwargs: Any) -> _RaisingSdk:
+        return self
+
+    @property
+    def messages(self) -> _RaisingSdk:
+        return self
+
+    async def count_tokens(self, **kwargs: Any) -> Any:
+        raise TimeoutError("not the deadline")
+
+
+async def test_a_timeout_error_that_is_not_the_deadlines_propagates() -> None:
+    """Only the deadline's own expiry becomes a `timeout` outcome (ADR-089)."""
+    client = AnthropicModelClient(_RaisingSdk(), config(), guard())  # type: ignore[arg-type]  # reason: a stand-in for the SDK
+    with pytest.raises(TimeoutError, match="not the deadline"):
+        await client.decide(SYSTEM_PROMPT, OBSERVATION, DecisionEnvelope, within_s=30.0)

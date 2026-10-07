@@ -68,8 +68,9 @@ Start at [docs/README.md](docs/README.md). The originating specification is [doc
 Stage 2 is in: the contracts, the protocol package, the two agent services with the deterministic
 policy, and the backend — run controller, relay, indexer, projection, and the operator API with its
 event stream and evidence export. Two deterministic agents can be run against each other end to end
-on the local chain through the API. What is not in yet is the model policy (stage 3) and the browser
-interface (stage 4), so a run is started with `curl`, not from a browser.
+on the local chain through the API. The model policy is in (stage 3.2) and runs end to end on canned
+model responses; live model runs come with stage 3.4, and the browser interface with stage 4, so a
+run is started with `curl`, not from a browser.
 
 Prerequisites: [uv](https://docs.astral.sh/uv/), Node 22 with Corepack, [Foundry](https://getfoundry.sh),
 Docker with Compose. Exact versions are in [ADR-033](docs/decision_log.md). `make` and the

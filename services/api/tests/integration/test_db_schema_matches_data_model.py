@@ -239,6 +239,7 @@ TABLES: dict[str, dict[str, str]] = {
         "latency_ms": f"INTEGER {N}",
         "requested_at": f"{TS} {NN}",
         "authorized": f"BOOLEAN {NN}",
+        "raw_response_escaped": f"BOOLEAN {NN}",
         **COMMON,
     },
     "signed_actions": {

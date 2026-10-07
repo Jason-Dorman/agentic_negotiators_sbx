@@ -217,6 +217,10 @@
           "raw_response": {
             "title": "Raw Response"
           },
+          "raw_response_escaped": {
+            "title": "Raw Response Escaped",
+            "type": "boolean"
+          },
           "request_hash": {
             "anyOf": [
               {
@@ -300,6 +304,7 @@
           "requested_at",
           "observation_hash",
           "authorized",
+          "raw_response_escaped",
           "label"
         ],
         "title": "DecisionRecord",

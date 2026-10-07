@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -95,8 +96,10 @@ class _Routes:
                 if not request_id:
                     raise BadRequestError(f"{REQUEST_ID_HEADER} is required")
                 payload = await action(body, None if run_id is None else _run_id(run_id))
+                response = _respond(200, dict(payload), request_id)
+                # Only once the body has rendered: an answer that cannot be encoded is a 500.
                 status = 200
-                return _respond(200, dict(payload), request_id)
+                return response
             except AgentError as error:
                 status = error.status
                 return _respond(error.status, _envelope(error, request_id), request_id)
@@ -247,6 +250,9 @@ def _provisioning(request: ProvisionBody, raw: Mapping[str, Any]) -> Provisionin
         model_id=request.model_id,
         effort=request.effort,
         repair_attempts=request.limits.repair_attempts,
+        model_call_ceiling=request.limits.model_call_ceiling,
+        model_spend_ceiling_usd=Decimal(request.limits.model_spend_ceiling_usd),
+        model_timeout_s=request.limits.model_timeout_s,
         expected=ExpectedSession(
             chain_id=session.chain_id,
             exchange_address=session.exchange_address,

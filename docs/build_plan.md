@@ -903,7 +903,7 @@ container wrote, the restart's included, held a key, a root, a shared secret or 
 
 ## Stage 3: Model decisions
 
-**Status: in progress; 3.1 complete, 6 October 2026.** Split into four sub-stages on 4 October 2026 at the product owner's direction, before work began, so
+**Status: in progress; 3.1 complete, 6 October 2026; 3.2 complete, 7 October 2026.** Split into four sub-stages on 4 October 2026 at the product owner's direction, before work began, so
 that each is one pass, one branch and one pull request ending in a demonstrable artefact of its own,
 as stage 2's were. The stage's deliverables and exit condition are unchanged; they are met at the
 end of 3.4.
@@ -929,10 +929,11 @@ Stage 3 is therefore mostly the agent service's `model/` and `budget/` modules
 
 Five questions bore on this stage when it was split, each needed by the sub-stage named and put to
 the product owner before that sub-stage starts. Q72, the default model, was needed by 3.1 and was
-answered on 4 October 2026: `claude-sonnet-5-5` ([ADR-014](decision_log.md) amended). Still open in
-[open_questions.md](open_questions.md): Q46, a malformed attempt in the next observation; Q71, a NUL
-in a stored response; and Q73, how a run comes to use canned model responses, by 3.2. Q74, the
-spending cap and attempt limit for the live evidence, by 3.4.
+answered on 4 October 2026: `claude-sonnet-5-5` ([ADR-014](decision_log.md) amended). Q46, Q71 and
+Q73 were needed by 3.2 and were answered on 6 October 2026, with Q82, which building it raised
+(below). Still open in [open_questions.md](open_questions.md), both by 3.4: Q74, the spending cap
+and attempt limit for the live evidence; and Q83, raised by 3.2, whether a run's model spend so far
+survives an agent restart, which today starts its budget again at zero.
 
 **Stage deliverables**
 - `ModelPolicy`, `ModelClient` wrapper over the Anthropic SDK with structured outputs, prompt templates with versioning, `BudgetGuard`, price table config, repair loop, refusal and timeout handling. (3.1 and 3.2)
@@ -1063,23 +1064,114 @@ below the ceiling at the defaults).
 
 ### Stage 3.2: ModelPolicy, prompts and fixtures
 
+**Status: complete, 7 October 2026.** Built on 6 October and reviewed adversarially on 7 October
+(below). Every deliverable below is done and its exit condition is met; the gates are green:
+853 agent-service tests (121 more than at 3.1), the whole Python suite with integration required
+(1,834 passed, 2 skipped by design), `mypy --strict`, `ruff` and the six import contracts. No call reached the real
+API.
+
+Four questions went to the product owner before the code was written and were answered on
+6 October 2026, each the recommended option: an agent instance is put in fixture mode by its own
+configuration, never by a run request, reports it in its health, and the backend records the run
+as `fixture` from that report at validation (Q73, [ADR-088](decision_log.md)); unparseable,
+`refusal` and `max_tokens` answers are refused attempts and repaired, while a timeout or a provider
+fault fails the turn at once and a refused budget ends it `budget_exhausted` (Q82, raised by this
+build, [ADR-089](decision_log.md)); a malformed attempt stays out of the next observation (Q46,
+[ADR-091](decision_log.md)); and a NUL is stored as the text `\u0000` with the record flagged (Q71,
+[ADR-090](decision_log.md), migration 0005).
+
+What the build found, and decided within those answers:
+
+- **A call that was never sent is not a decision.** A budget refusal, or a token count that fails
+  before the guard admits the call, would otherwise be a record that the metrics count as a model
+  call and whose unknown estimate makes the run's cost unknown. `ModelResult.sent` says whether
+  the guard admitted the call, and only a sent call is recorded (ADR-089).
+- **The typed observation dropped `my_previous_decisions`**, which the model needs. `Observation`
+  now keeps the validated document it was built from, and the model's user message is that
+  document less the mandate's `instructions`, which the system prompt already carries.
+- **The deadline bounds the whole call.** The backend gives a turn `model_timeout_s` per attempt
+  and 15 s of slack, but a call is a token count and a request, each up to the timeout. The agent
+  gives each attempt the time left before `deadline_at` less one second, the client bounds the
+  token count and the call together by it, and a call cut short there is a `timeout` charged its
+  estimate; only the deadline's own expiry is turned into one, any other cancellation propagates.
+  The existing tests' turns carried a deadline already past, now enforced, and were moved forward.
+- **A model's text can be valid JSON that cannot travel**: `NaN`, `Infinity` and numbers too large
+  for a double would have made the agent's response unserialisable. Such text is kept as text. (The
+  review found two more kinds, below.)
+- **A NUL reaches `validation_feedback` too**, because the validator quotes an unexpected field's
+  name. Both are escaped under the one flag.
+- **The prompts are packaged.** `services/agent/prompts/` is outside the Python package, so the
+  wheel force-includes it as `agent/_prompts`; the installed copy gives the same version hash as
+  the source tree.
+- **A disclosure sentence was wrong.** Security section 9 said a fixture run "used a deterministic
+  policy, not a model"; under ADR-088 it used canned model responses, and now says so.
+
+#### The adversarial review, 7 October 2026
+
+Five lenses over the change set — claims against reality; the model policy and the turn, read as an
+attacker controlling the model's answers; fixture mode, configuration and packaging; what is stored
+and who can see it; and vacuity — each in its own copy of the tree and its own database, then two
+independent refutation attempts per finding, one on truth and one on impact: 23 agents, about 2M
+tokens, and no call to the real API. 38 candidates merged to 26 distinct; the 8 most severe were
+verified, 5 survived both refutations and 3 were refuted; 18 were left open over the verification
+cap. Four of its questions went to the product owner and were answered on 7 October 2026 (Q84 to
+Q87, amendments to [ADR-088](decision_log.md), [ADR-089](decision_log.md) and
+[ADR-090](decision_log.md)). Every confirmed finding is fixed in this change set, and so is every
+open one; each fix was then undone on its own in a private copy and the test aimed at it shown to
+fail — 28 of them, all killed, and the end-to-end surrogate run shown stranded again without its
+fix. Nothing unsafe was found: no price clamped or chosen, no signature from unvalidated state, no
+private value on a public surface in five planted-secret runs, no call past the budget or the
+deadline, no request that can make a run canned. The ones that mattered:
+
+- **A lone surrogate stranded the run.** A model answer whose explanation was the escape `\ud800`
+  failed the strict parse, so it was unparseable, but `json.loads` accepted it and the validator
+  passed the offer: the turn was signed and cached, its response could not be encoded as UTF-8, and
+  the agent answered 500 on every ask; the run went to `recovery_required` with its billed call
+  unrecorded. Such text is now kept as text and refused, and a lone surrogate the provider's JSON
+  already decoded is written as its escape. JSON nested deeper than 32 levels is no longer parsed
+  at all, so a pathological answer cannot exhaust the parser's stack, and the request log line no
+  longer says 200 for a response that failed to render.
+- **The PRD said a fixture run was a deterministic one** (FR-U7), against ADR-088; it now says canned
+  model responses (Q84).
+- **Four claims had no test that could fail**: a provisioned run's role and instructions reaching
+  its system prompt, one fixture party making the run `fixture`, a repair message actually carrying
+  the feedback (both tests compared the text with the template that renders it), and the template
+  version changing with each of its three inputs. Each now has one, and the version is pinned.
+- **The NUL escape could lose a field**: a key holding a NUL and a key already reading `\u0000`
+  became one. The escape now doubles backslashes, so it is reversible, and covers a decision's stop
+  reason and a turn's failure, which can quote a provider's error type (Q86).
+- Smaller: a canned answer is held to `model_timeout_s` as a live call is (Q87); a valid decision
+  under a `refusal` or `max_tokens` stop is signed, which the contract now says rather than implying
+  the opposite (Q85); and tests now pin the one-second margin, the `refusal` code only for the last
+  attempt, three-attempt repairs, the provisioned effort and timeout, the client's deadline guard,
+  the fixture client charging a cancelled or unfillable call, the 422-before-503 order, the
+  template's leg of `model_ok`, an empty `AGENT_MODEL_FIXTURES`, a malformed token count sending
+  nothing, a re-validation setting a run back to `live`, and the escape flag field by field. Two
+  counts were wrong and are corrected: the new-test count, and the spend-ceiling set's "third call",
+  true only at `claude-sonnet-5-5`'s prices.
+
+Refuted, with reasons kept in the review's record: a validate racing a start relabelling a run (true
+in code, reachable only by concurrent operator misuse; runbook 9 no longer overstates it); a
+validly worded refusal being signed (true, and what ADR-089 decided, Q85); and deep JSON stranding
+the backend (unreachable on the live path; bounded anyway, above).
+
 **Deliverables**
-- Prompt templates under `services/agent/prompts/`, versioned, with the version hash recorded per
+- **done** — Prompt templates under `services/agent/prompts/`, versioned, with the version hash recorded per
   decision ([ADR-029](decision_log.md)): role, protocol rules and output schema in that order, then
   the mandate's `instructions` in a delimited section introduced as the agent's own private
   guidance, the whole system prompt static per run behind a cache breakpoint, the observation after
   it. A repair attempt's message carries this agent's own validation feedback and nothing else.
-- `ModelPolicy` behind the `Policy` protocol, registered in the composition root: the repair loop
+- **done** — `ModelPolicy` behind the `Policy` protocol, registered in the composition root: the repair loop
   up to `limits.repair_attempts`, `refusal` and unparseable answers treated as refused attempts,
   `deadline_at` enforced against the model call, and every attempt's `PolicyResponse` filled with
   its raw response, stop reason, usage, estimated and reported cost. `policy_kinds` gains `model`
   and `model_ok` reports the client.
-- Decision records with usage and cost end to end: the agent's turn response carries each
+- **done** — Decision records with usage and cost end to end: the agent's turn response carries each
   attempt's accounting, the backend stores it in `decisions` unchanged, and the run's metrics and
   export show it.
-- The fixture model client: canned responses from `tests/fixtures/model_responses/`, a run that
+- **done** — The fixture model client: canned responses from `tests/fixtures/model_responses/`, a run that
   uses them marked `fixture` in `runs.mode` and labelled so on every surface, as Q73 settles.
-- Q46 and Q71 answered and built.
+- **done** — Q46 and Q71 answered and built.
 
 **Exit condition:** The `ModelPolicy` unit tests of test_strategy section 6 pass with a fake
 `ModelClient` — valid first attempt, invalid then valid repair, invalid twice, timeout, refusal,

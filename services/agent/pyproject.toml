@@ -24,3 +24,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent"]
+
+# ADR-029: the prompt templates are reviewed source outside the package; the wheel carries them as
+# `agent/_prompts`, where `agent.prompting` looks first.
+[tool.hatch.build.targets.wheel.force-include]
+"prompts" = "agent/_prompts"

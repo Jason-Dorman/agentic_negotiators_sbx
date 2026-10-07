@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
@@ -43,6 +44,9 @@ class Provisioning:
     model_id: str | None
     effort: str | None
     repair_attempts: int
+    model_call_ceiling: int
+    model_spend_ceiling_usd: Decimal
+    model_timeout_s: int
     expected: ExpectedSession
     key_ref: str
     mandate_version_id: UUID

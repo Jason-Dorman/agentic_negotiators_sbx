@@ -4,7 +4,8 @@
 keys, so a signature can be compared with the fixture's — and it records every signature it makes,
 which is how a test asserts that nothing was signed. `KeyedKeyHolder` hands one out per derivation.
 `ScriptedPolicy` returns responses a test wrote, in order, for driving the turn executor through
-refusals a real policy would never make.
+refusals a real policy would never make. `FakeModelClient` does the same for `ModelPolicy`, one
+`ModelResult` per call, and records every request it was given.
 """
 
 from __future__ import annotations
@@ -14,10 +15,12 @@ from typing import Any
 
 from agent_observations import FIXTURE
 from eth_account import Account
+from pydantic import BaseModel
 
 from agent.keys import KeyDerivation, RunSigner, SignedTransaction
+from agent.model import ModelResult
 from agent.observation import Observation, Role
-from agent.policy import PolicyKind, PolicyResponse, Repair
+from agent.policy import PolicyFailure, PolicyKind, PolicyResponse, Repair
 from negotiation_protocol import Address, Digest
 
 FIXTURE_KEYS: dict[Role, str] = {
@@ -82,6 +85,7 @@ class ScriptedPolicy:
     def __init__(self, *responses: Any) -> None:
         self._responses: Sequence[Any] = responses
         self.calls: list[tuple[Observation, Repair | None]] = []
+        self.time_left: list[float | None] = []
 
     @property
     def kind(self) -> PolicyKind:
@@ -95,7 +99,58 @@ class ScriptedPolicy:
     def prompt_template_version(self) -> str | None:
         return None
 
-    async def decide(self, observation: Observation, repair: Repair | None) -> PolicyResponse:
+    async def decide(
+        self, observation: Observation, repair: Repair | None, *, time_left_s: float | None
+    ) -> PolicyResponse | PolicyFailure:
+        """A scripted `PolicyResponse` or `PolicyFailure` is returned as it is; anything else is
+        the raw response of a computed one."""
         self.calls.append((observation, repair))
+        self.time_left.append(time_left_s)
         index = min(len(self.calls), len(self._responses)) - 1
-        return PolicyResponse.computed(self._responses[index])
+        response = self._responses[index]
+        if isinstance(response, PolicyResponse | PolicyFailure):
+            return response
+        return PolicyResponse.computed(response)
+
+
+class ModelCall:
+    """One request a `FakeModelClient` was given, as the client would have sent it."""
+
+    def __init__(
+        self,
+        system_prompt: str,
+        observation: str,
+        schema: type[BaseModel],
+        repair: str | None,
+        within_s: float | None,
+    ) -> None:
+        self.system_prompt = system_prompt
+        self.observation = observation
+        self.schema = schema
+        self.repair = repair
+        self.within_s = within_s
+
+
+class FakeModelClient:
+    """A `ModelClient` that returns the scripted `ModelResult`s in order and records each request.
+
+    Running out of script is a test error, not a model outcome, so it raises.
+    """
+
+    def __init__(self, *results: ModelResult) -> None:
+        self._results = list(results)
+        self.calls: list[ModelCall] = []
+
+    async def decide(
+        self,
+        system_prompt: str,
+        observation: str,
+        schema: type[BaseModel],
+        *,
+        repair: str | None = None,
+        within_s: float | None = None,
+    ) -> ModelResult:
+        self.calls.append(ModelCall(system_prompt, observation, schema, repair, within_s))
+        if len(self.calls) > len(self._results):
+            raise AssertionError(f"the model was called {len(self.calls)} times; scripted fewer")
+        return self._results[len(self.calls) - 1]

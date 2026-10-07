@@ -71,9 +71,12 @@ class DeterministicPolicy:
     def prompt_template_version(self) -> str | None:
         return None
 
-    async def decide(self, observation: Observation, repair: Repair | None) -> PolicyResponse:
+    async def decide(
+        self, observation: Observation, repair: Repair | None, *, time_left_s: float | None
+    ) -> PolicyResponse:
         # `repair` is ignored: a deterministic policy asked again would decide the same thing, and
         # it consults the validator before deciding, so it is never refused in the first place.
+        # It answers at once, so the deadline never binds it.
         return PolicyResponse.computed({"decision": self._choose(observation)})
 
     def _choose(self, observation: Observation) -> dict[str, str]:
