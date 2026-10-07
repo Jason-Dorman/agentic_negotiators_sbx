@@ -269,9 +269,9 @@ Unique: `(run_id, turn)`.
 | `validation_ok` | `BOOLEAN NOT NULL` | |
 | `validation_code` | `TEXT NULL` | one of the closed set in [protocol.md](protocol.md) section 11.1, e.g. `below_reservation`, `stale_offer_hash`, `schema_error`; null when the attempt passed |
 | `validation_feedback` | `TEXT NULL` | the private feedback text sent back on repair |
-| `usage` | `JSONB NULL` | input, output, cache tokens |
-| `cost_estimated_usd` | `NUMERIC(12,6) NULL` | from price table |
-| `cost_reported_usd` | `NUMERIC(12,6) NULL` | if provider reports; else null, displayed as unknown |
+| `usage` | `JSONB NULL` | `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, as the provider reported them |
+| `cost_estimated_usd` | `NUMERIC(12,6) NULL` | the call's pre-call bound, priced from the model price table ([ADR-085](decision_log.md)); null when the model is unpriced, displayed as unknown |
+| `cost_reported_usd` | `NUMERIC(12,6) NULL` | the provider's reported usage priced from the same table ([ADR-085](decision_log.md)); null when no usage came back — a timeout, an error status, a malformed body, a cancellation — or the model is unpriced, displayed as unknown, never as zero (Q81) |
 | `latency_ms` | `INTEGER NULL` | `CHECK >= 0` |
 | `requested_at` | `TIMESTAMPTZ NOT NULL` | |
 | `authorized` | `BOOLEAN NOT NULL DEFAULT false` | true only when this attempt became a signed action. `CHECK (NOT authorized OR validation_ok)`: an attempt that failed validation can never be the one that authorised an action (invariant 4) |
@@ -387,7 +387,7 @@ One row per run, recomputed on every terminal transition and on demand.
 | `recorded_offers` | `INTEGER NOT NULL DEFAULT 0` | |
 | `decision_time_ms`, `chain_wait_ms`, `setup_chain_wait_ms` | `BIGINT NOT NULL DEFAULT 0` | |
 | `model_calls`, `input_tokens`, `output_tokens` | `INTEGER NOT NULL DEFAULT 0` | |
-| `model_cost_estimated_usd`, `model_cost_reported_usd` | `NUMERIC(12,6) NULL` | |
+| `model_cost_estimated_usd`, `model_cost_reported_usd` | `NUMERIC(12,6) NULL` | the sums of the model attempts' `decisions` costs; either is null when any attempt's is, so one attempt that reported no usage makes the run's reported cost unknown ([ADR-085](decision_log.md), Q81) |
 | `gas_used_negotiation`, `gas_used_setup` | `NUMERIC(78,0) NOT NULL DEFAULT 0` | |
 | `fee_wei_negotiation`, `fee_wei_setup` | `NUMERIC(78,0) NOT NULL DEFAULT 0` | |
 | `settled_quote_minor` | `NUMERIC(78,0) NULL` | |

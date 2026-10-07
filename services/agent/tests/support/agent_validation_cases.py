@@ -60,6 +60,22 @@ def buyer_facing(buyer_quote: int, seller_quote: int, **kwargs: Any) -> dict[str
     return observation("buyer", history=alternating_offers(buyer_quote, seller_quote), **kwargs)
 
 
+#: Responses the decision schema admits, every one of which the validator must parse; the model
+#: client's decision envelope admits them too (`test_model_client.py`).
+VALID_RESPONSES: tuple[Any, ...] = (
+    offer("1"),
+    offer("80000000"),
+    offer("9" * 77),
+    accept(digest_for(1)),
+    accept("0x" + "AB" * 32),
+    walk_away("terms_unacceptable"),
+    walk_away("inventory_constraint"),
+    walk_away("no_further_concession"),
+    {**offer("80000000"), "explanation": ""},
+    {**offer("80000000"), "explanation": "x" * 280},
+)
+
+
 @dataclass(frozen=True)
 class Refusal:
     name: str

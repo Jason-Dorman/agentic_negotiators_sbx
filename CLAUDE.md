@@ -31,7 +31,7 @@ Python 3.12 with `uv`, `ruff`, `mypy --strict`, `pytest`. Node LTS with `pnpm`, 
 
 ## Model integration
 
-Anthropic Claude via the official `anthropic` Python SDK, default `claude-opus-5`, structured outputs, adaptive thinking, SDK retries off, one explicit repair. See `docs/architecture.md` section 7 and ADR-014, ADR-015.
+Anthropic Claude via the official `anthropic` Python SDK, default `claude-sonnet-5-5`, structured outputs, adaptive thinking, SDK retries off, one explicit repair. See `docs/architecture.md` section 7 and ADR-014, ADR-015.
 
 ## When unsure
 

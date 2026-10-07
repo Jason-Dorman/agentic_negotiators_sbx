@@ -20,6 +20,7 @@ from agent_observations import (
 from agent_validation_cases import (
     ALL,
     STRUCTURAL,
+    VALID_RESPONSES,
     Refusal,
     accept,
     buyer_facing,
@@ -196,19 +197,6 @@ def test_a_stale_hash_is_reported_before_the_price_it_would_have_paid() -> None:
 # --------------------------------------------------------------------------------------
 
 DECISION_SCHEMA = Draft202012Validator(load_schema("agent_decision.v1.json"))
-
-VALID_RESPONSES: tuple[Any, ...] = (
-    offer("1"),
-    offer("80000000"),
-    offer("9" * 77),
-    accept(digest_for(1)),
-    accept("0x" + "AB" * 32),
-    walk_away("terms_unacceptable"),
-    walk_away("inventory_constraint"),
-    walk_away("no_further_concession"),
-    {**offer("80000000"), "explanation": ""},
-    {**offer("80000000"), "explanation": "x" * 280},
-)
 
 
 @pytest.mark.parametrize("response", VALID_RESPONSES)

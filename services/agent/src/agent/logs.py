@@ -10,7 +10,10 @@ rendered as its type name and never as its `repr`, because a `Validation`, a `Re
 `DecisionRecord` carries private feedback in its fields.
 
 The standard library's records — uvicorn's own lines — pass through the same processor and come out
-as JSON too, so there is one redaction rule for everything the process writes.
+as JSON too, so there is one redaction rule for everything the process writes. The model SDK's and
+its HTTP library's loggers are held at `WARNING` whatever the level or `ANTHROPIC_LOG` says: at
+`DEBUG` they print each request's options, the system prompt and its mandate among them, inside a
+message string no field-name rule can see into.
 """
 
 from __future__ import annotations
@@ -43,12 +46,17 @@ PRIVATE_FIELDS: Final = frozenset(
 )
 _PRIVATE_NAME = re.compile(r"(key|secret|password|token|root)", re.IGNORECASE)
 _CREDENTIAL = re.compile(r"sk-ant-[A-Za-z0-9_-]+")
+#: References, not secrets; the database stores the first two.
+_REFERENCE_FIELDS: Final = frozenset({"key_ref", "root_key_ref", "model_key_ref"})
+#: Held at WARNING (stage 3.1): `anthropic` writes request bodies at DEBUG; `httpx2` and
+#: `httpcore2`, under the SDK, and `httpx` and `httpcore`, under other clients, write request lines.
+QUIET_LOGGERS: Final = ("anthropic", "httpx2", "httpcore2", "httpx", "httpcore")
 
 
 def _is_private(name: str) -> bool:
     lowered = name.lower()
     return lowered in PRIVATE_FIELDS or (
-        _PRIVATE_NAME.search(lowered) is not None and lowered not in {"key_ref", "root_key_ref"}
+        _PRIVATE_NAME.search(lowered) is not None and lowered not in _REFERENCE_FIELDS
     )
 
 
@@ -103,6 +111,8 @@ def configure_logging(
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(numeric)
+    for name in QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(max(numeric, logging.WARNING))
     structlog.configure(
         processors=[*shared, structlog.processors.JSONRenderer(sort_keys=True)],
         wrapper_class=structlog.make_filtering_bound_logger(numeric),
