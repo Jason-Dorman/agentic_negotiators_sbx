@@ -169,7 +169,7 @@ class AnthropicModelClient:
         repair: str | None = None,
         within_s: float | None = None,
     ) -> ModelResult:
-        request = self._request(system_prompt, observation, schema, repair)
+        request = request_body(self._config, system_prompt, observation, schema, repair)
         call = _InFlight()
         limit = asyncio.timeout(None if within_s is None else max(0.0, within_s))
         try:
@@ -231,30 +231,6 @@ class AnthropicModelClient:
             # A success status whose body does not decode: not JSON, or not UTF-8.
             return self._malformed(charge, request_id, self._elapsed_ms(started))
         return self._answered(message, request_id, charge, self._elapsed_ms(started), schema)
-
-    def _request(
-        self, system_prompt: str, observation: str, schema: type[BaseModel], repair: str | None
-    ) -> dict[str, Any]:
-        """The request both endpoints are sent, `max_tokens` aside, which `count_tokens` has no
-        use for. A repair is a second text block in the same user message: nothing but this
-        agent's own feedback is added, and the cached system prompt is unchanged."""
-        content: str | list[dict[str, str]] = (
-            observation
-            if repair is None
-            else [{"type": "text", "text": observation}, {"type": "text", "text": repair}]
-        )
-        return {
-            "model": self._config.model_id,
-            "system": [
-                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
-            ],
-            "messages": [{"role": "user", "content": content}],
-            "thinking": {"type": "adaptive"},
-            "output_config": {
-                "effort": self._config.effort,
-                "format": {"type": "json_schema", "schema": anthropic.transform_schema(schema)},
-            },
-        }
 
     async def _count_tokens(self, request: Mapping[str, Any]) -> int | ModelResult:
         try:
@@ -346,6 +322,34 @@ class AnthropicModelClient:
 
     def _elapsed_ms(self, started: float) -> int:
         return max(0, round((self._monotonic() - started) * 1000))
+
+
+def request_body(
+    config: ModelCallConfig,
+    system_prompt: str,
+    observation: str,
+    schema: type[BaseModel],
+    repair: str | None,
+) -> dict[str, Any]:
+    """The request both endpoints are sent, `max_tokens` aside, which `count_tokens` has no use
+    for. A repair is a second text block in the same user message: nothing but this agent's own
+    feedback is added, and the cached system prompt is unchanged. The outbound-context assertion
+    checks exactly this, for a fixture run too, which sends nothing (ADR-092)."""
+    content: str | list[dict[str, str]] = (
+        observation
+        if repair is None
+        else [{"type": "text", "text": observation}, {"type": "text", "text": repair}]
+    )
+    return {
+        "model": config.model_id,
+        "system": [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": content}],
+        "thinking": {"type": "adaptive"},
+        "output_config": {
+            "effort": config.effort,
+            "format": {"type": "json_schema", "schema": anthropic.transform_schema(schema)},
+        },
+    }
 
 
 def sort_answer(

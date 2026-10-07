@@ -174,12 +174,14 @@ def test_the_holder_exposes_signing_and_no_key_material() -> None:
     keys = holder()
     signer = keys.signer_for(BUYER_RUN)
     assert {name for name in dir(keys) if not name.startswith("_")} == {
+        "appears_in",
         "from_ref",
         "key_ref",
         "signer_for",
     }
     assert {name for name in dir(signer) if not name.startswith("_")} == {
         "address",
+        "appears_in",
         "derivation",
         "sign_digest",
         "sign_transaction",

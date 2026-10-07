@@ -903,7 +903,7 @@ container wrote, the restart's included, held a key, a root, a shared secret or 
 
 ## Stage 3: Model decisions
 
-**Status: in progress; 3.1 complete, 6 October 2026; 3.2 complete, 7 October 2026.** Split into four sub-stages on 4 October 2026 at the product owner's direction, before work began, so
+**Status: in progress; 3.1 complete, 6 October 2026; 3.2 complete, 7 October 2026; 3.3 complete, 7 October 2026.** Split into four sub-stages on 4 October 2026 at the product owner's direction, before work began, so
 that each is one pass, one branch and one pull request ending in a demonstrable artefact of its own,
 as stage 2's were. The stage's deliverables and exit condition are unchanged; they are met at the
 end of 3.4.
@@ -931,9 +931,11 @@ Five questions bore on this stage when it was split, each needed by the sub-stag
 the product owner before that sub-stage starts. Q72, the default model, was needed by 3.1 and was
 answered on 4 October 2026: `claude-sonnet-5-5` ([ADR-014](decision_log.md) amended). Q46, Q71 and
 Q73 were needed by 3.2 and were answered on 6 October 2026, with Q82, which building it raised
-(below). Still open in [open_questions.md](open_questions.md), both by 3.4: Q74, the spending cap
-and attempt limit for the live evidence; and Q83, raised by 3.2, whether a run's model spend so far
-survives an agent restart, which today starts its budget again at zero.
+(below). Q88 to Q92 were raised and answered while building 3.3 (below). Still open in
+[open_questions.md](open_questions.md), both by 3.4: Q74, the spending cap and attempt limit for the
+live evidence; and Q83, raised by 3.2, whether a run's model spend so far survives an agent restart,
+which today starts its budget again at zero. Q93, raised by 3.3, whether a decision record should
+carry the hash of the request it sent, is needed by no sub-stage.
 
 **Stage deliverables**
 - `ModelPolicy`, `ModelClient` wrapper over the Anthropic SDK with structured outputs, prompt templates with versioning, `BudgetGuard`, price table config, repair loop, refusal and timeout handling. (3.1 and 3.2)
@@ -1184,28 +1186,164 @@ metrics reporting them, and an export that validates.
 
 ### Stage 3.3: Isolation suite (A12) and the no-hardcoding gate
 
+**Status: complete, 7 October 2026.** Built and reviewed adversarially on 7 October (below). Every
+deliverable below is done and its exit condition is met; the gates are green: 929 agent-service
+tests (76 more than at 3.2), the isolation suite's 20 (six whole runs and the scanner's own 14),
+the gate's 60, the whole Python suite with integration required (1,988 passed, 2 skipped by design, in 35 minutes), `mypy --strict`,
+`ruff`, the six import contracts, the secret scan and the new gate. No call reached the real API.
+Before the review, one run of the whole suite failed
+`test_chain_relay_and_indexer.py::test_an_expiry_someone_else_sent_is_found_by_the_log_scan`, which
+reverted `SessionNotExpired` just after moving chain time, touches nothing this sub-stage changed,
+and passed alone three times running: a timing flake in the stage 2.3 suite, left for its own fix.
+
+Five questions went to the product owner while it was built and were answered on 7 October 2026,
+each the recommended option. The deliverable's "key-shaped strings" and security section 3's
+claim that the agent's scan held "any private mandate value not its own", with the backend scanning
+each observation too, did not survive contact: an agent never holds its counterparty's mandate, a
+runtime scan for numbers would refuse an observation whenever an offer equals a private bound — the
+deterministic seller's last offer is exactly its floor — and every observation carries 32-byte
+digests of exactly a private key's shape. So the denylist is what the instance itself holds, its
+secrets exactly and its keys in any hex form, plus credential shapes, and the counterparty's mandate
+is the suite's to check from outside (Q88, Q89, [ADR-092](decision_log.md); security 3 corrected).
+A hit is an agent refusal, `422 outbound_context_refused`, and the run waits in `recovery_required`
+for the operator rather than aborting as a model failure (Q90). The validator quotes a model's
+unexpected field names back to it, so a model could have tripped the check through its own repair
+message; it now masks credential-shaped text in them (Q92). The grep test reaches every non-test
+Python, Solidity and TypeScript source, with its values read from the committed scenarios (Q91,
+[ADR-093](decision_log.md)).
+
+What the build found, and decided within those answers:
+
+- **The check runs for fixture runs too.** A fixture run sends nothing, but every model client,
+  live or fixture, sits behind `CheckedModelClient`, which builds the request exactly as the live
+  client sends it (`request_body`, now one function both use) and checks every string in it. So
+  the isolation suite's runs exercise the assertion a live run depends on.
+- **Keys without exposing keys.** The key holder and the run signer each answer one new question,
+  `appears_in(text)` — whether a text holds the whole key, in hex of any case with or without `0x`
+  — and give out nothing else; the exact-surface test names it. The holder also answers for every
+  run key it derived that is still in use, so one run's key in another run's request is found.
+- **Faithful logs need real processes.** In process, both agents and the API log through one
+  structlog configuration, so the agents' own redaction would not be what was scanned. The suite
+  runs each agent as `tests/support/a12_agent.py`, the real entry point plus a capture of every
+  request that passed the assertion, through the composition root's optional
+  `model_request_observer`, which only the suite sets.
+- **Data-model invariant 5** names `run_events.data` and each party's `turns.observation`, so the
+  suite scans those rows too, beside the streamed frames. It also names an outbound request hash,
+  but `decisions.request_hash` is never filled: raised as Q93, and the suite scans the captured
+  requests themselves.
+- **The shared fixtures moved up a level.** The PostgreSQL and Anvil fixtures were in
+  `integration/conftest.py`; the isolation suite needs them too, and defining them twice would be
+  two session-scoped databases. They are now `services/api/tests/conftest.py`, which marks the
+  isolation suite `isolation` and both suites `integration`.
+- **A docstring named the settlement price**, as a formatting example in
+  `api.projection.sentences`; it now uses another number, since the price may appear nowhere.
+
 **Deliverables**
-- The outbound-context assertion in the agent's send path: every request body scanned before it
-  leaves for this instance's root secret, derived keys, HMAC secret, provider key and key-shaped or
+- **done** — The outbound-context assertion in the agent's send path: every request body scanned
+  before it leaves for this instance's root secret, derived keys, HMAC secret, provider key and
   credential-shaped strings, and a hit refuses the call as a distinct failure, logged without the
-  match.
-- `services/api/tests/isolation/test_a12_leakage.py`: whole model-versus-model runs on fixture
-  responses with every outbound model request from both agents captured, then scanned for the
-  opponent's mandate values and instructions, the opponent's validation feedback, keys and
-  credentials; the same scan over every log line both agents and the API wrote, every SSE event and
-  the default export. Mandates are chosen so that each value is a distinctive string a scan cannot
-  miss or confuse.
-- Prompt-injection cases: an `instructions` field that tries to change the rules, reveal the
-  mandate, or emit a fourth decision shape, each ending in a refused attempt or an in-mandate
-  action and never a signature outside the legal set.
-- The grep test of test_strategy section 11: no non-test module compares against the default
-  reservation values, or names a final price.
+  match (`agent/outbound.py`, `agent/model/checked.py`, ADR-092). "Key-shaped" became the
+  instance's own keys in any hex form, since every observation carries public digests of a key's
+  shape (Q89).
+- **done** — `services/api/tests/isolation/test_a12_leakage.py`: whole model-versus-model runs on
+  fixture responses (`a12-isolation`, `a12-injection`) with every outbound model request from both
+  agents captured, then scanned for the opponent's mandate values and instructions, its validation
+  feedback, explanations and refused proposals, keys and credentials; the same scan over every log
+  line both agents and the API wrote, every SSE event and run event, each party's stored
+  observations, the public routes and the default export. Mandates are chosen so that each value is
+  a distinctive string a scan cannot miss or confuse: a buyer bound of 97.531246, a seller floor of
+  88.642317, and instructions carrying a phrase of their own.
+- **done** — Prompt-injection cases: an `instructions` field that tries to change the rules, reveal
+  the mandate and emit a fourth decision shape, obeyed by the canned buyer, ending in refused
+  attempts (the fourth shape, an accept above its bound) and in-mandate signatures (an offer of 82
+  whose explanation reveals the bound, and a walk-away), never a signature outside the legal set;
+  the revealing explanation reaches neither the seller, nor any public surface, nor any log.
+- **done** — The grep test of test_strategy section 11: no non-test module compares against a
+  committed scenario's reservation bound, or names the deterministic settlement price
+  (`infra/scripts/check_hardcoded_prices.py`, ADR-093).
 
 **Exit condition:** A12 passes. Each scan is shown to catch a deliberate leak — the opponent's
 reservation price put into the observation, feedback put into the other agent's repair, a key put
 into a request — before the suite is counted, and the outbound assertion is shown to refuse a
 request carrying the agent's own secret. The grep test fails on a planted literal and passes
 without it. Both run in CI.
+
+**Met, 7 October 2026.** A12 passes: six whole runs on Anvil through the API, each with two agent
+processes, in about two minutes. In the clean run — settled at 93 after one refused attempt on each side —
+each agent's three captured requests match its three decision records and carry nothing of the
+counterparty's, while each carries its own bound, instructions and feedback, which shows the scan
+reads what it is pointed at; and nothing private of either party is in any log line of the three
+processes, any SSE frame or run event, either party's stored observations, the public routes or
+the default export. Each scan was shown to catch a deliberate leak first: the seller's bound, root
+and run key planted in the buyer's observation, found in the buyer's request; the seller's
+feedback planted in the buyer's repair, found there and nowhere earlier; and, since the review, a
+private value planted into every surface the clean run scans — each route, the export, the SSE
+stream, the run events, both parties' stored observations and the three processes' logs — written
+as that surface writes it, each found. The buyer's own root, planted in its
+observation, was refused `outbound_context_refused` with nothing captured and no decision
+recorded, the run went to `recovery_required` with cause `agent_outbound_context_refused`, the
+agent logged the kind and not the key, and the operator's abort ended it. The grep test fails on
+each planted form and passes on the repository. Both run in CI: the isolation job is turned on
+with PostgreSQL and Foundry, and the gate runs in the secret-scan job and in `make lint`.
+
+Each guard was then broken on its own in a private copy of the tree and the tests aimed at it shown
+to fail — 24 mutations, 23 killed and one equivalent. The agent's check finding nothing, the client
+skipping it, the observer seeing a request before the check, the mask removed, the holder
+forgetting derived keys, a case-sensitive key match, no keystore password, no model key, no run
+key, an empty secret kept, object keys unchecked; the gate's comparison filter, exponent, whole-token
+form, settlement rule, test exemption, BigInt and `min`/`max`; and, against A12 itself, the
+observation builder handing a party both sides' decisions, feedback on the `turn.decision` event, an
+agent logging its provisioning body, the check bypassed, and the scanner without decimal amounts.
+The equivalent one: stripping underscores before `Decimal`, which reads them itself; the strip was
+removed.
+
+#### The adversarial review, 7 October 2026
+
+Five lenses over the change set — claims against reality; the outbound check, as an attacker and as
+an operator; whether the A12 suite is faithful and complete; the gate, CI wiring and regressions;
+and vacuity — each in its own copy of the tree and its own database, then two independent
+refutation attempts per finding, one on truth and one on impact: 23 agents, about 1.7M tokens, and
+no call to the real API. 26 candidates merged to 18 distinct; the 8 most severe were verified, 7
+survived both refutations and 1 was refuted; 10 were left open over the verification cap. Nothing
+unsafe was found in the product: no way around the outbound check — the body checked was
+byte-identical to the one the local fake server received — no leak between the agents, and no false
+positive on a real run. What it found were guarantees the code did not keep. Three of its questions
+went to the product owner and were answered on 7 October 2026 (Q94 to Q96, amendments to
+[ADR-092](decision_log.md) and [ADR-093](decision_log.md)). Every confirmed finding is fixed in
+this change set, and so is every open one; each fix was then undone on its own in a private copy
+and the test aimed at it shown to fail — 22 of them, all killed, two of them through whole A12 runs.
+The ones that mattered:
+
+- **The scanner could not see escaped text.** Every surface is JSON, and a text needle was a raw
+  substring, so feedback holding a quote was invisible: a mutation that put the injection run's
+  schema-error feedback into SSE and the logs survived. Text needles are now looked for as JSON
+  escapes them, once and twice, with and without `ensure_ascii`; the isolation mandates' instructions
+  now hold a quote, a backslash and non-ASCII text, so the in-run control proves it on every run.
+- **The amount needle missed the product's own rendering.** `format_minor` trims trailing zeros, so
+  a refused 99000000 would have appeared in a sentence as `99`. The needle adds that form, refuses a
+  whole-token amount it could not scan for without confusion, and the refused proposals are now
+  99.123457 and 85.432109.
+- **The Q92 mask ran before the quotes.** A model field named `ciphertext":`, once quoted by the
+  feedback, completed a keystore document, refused the repair and lost the turn's first, sent
+  attempt. The list is masked as quoted, and a test builds names from credential fragments and finds
+  none that trips the check through the feedback, the repair or the next observation.
+- **The gate was narrower than its documents.** A full stop after a number hid it; other bases,
+  comma grouping and long fractions were not read; a formatter-wrapped clamp passed because a
+  comparison was judged line by line; and `apps/web/src/lib` would never have been checked. All four
+  are fixed, the prompt templates are read too (Q94), and the documents no longer say "any form":
+  arithmetic expressions are out of scope, and say so (Q96).
+- Smaller: an exact secret holding a character JSON escapes is now found escaped, and a keystore
+  password under 12 characters leaves the model unoffered rather than refusing ordinary requests
+  (Q95); `read_sse` reads the last frame's data, not only its id; a failed agent start no longer
+  orphans the processes, and the logging fixture puts the root logger back; a planted value now
+  proves every surface's scan, not three of them; the scanner's forms have their own tests; and the
+  guards that survived deletion — the gate's arrow lookarounds, fraction lookbehind, test exemptions
+  and exclusions, and the check's PEM digits, secret-before-key order, `kinds` and observer position
+  — each have a test. Two stale section pointers are corrected.
+
+Refuted, with reasons kept in the review's record: that several A12 needles survive their own
+deletion — true of any negative scan on a clean run; a product mutation leaking the refused
+proposals and explanations into the export was caught by exactly those needles.
 
 ### Stage 3.4: Invariant checker and live evidence
 

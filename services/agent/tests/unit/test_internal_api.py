@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,8 @@ import pytest
 import structlog
 from agent_observations import BALANCES, FIXTURE, MANDATES, observation
 
+from agent.keys import KeyDerivation
+from agent.keys.derivation import derive_run_key
 from agent.logs import configure_logging
 from agent.main import create_app
 from agent.settings import AgentSettings
@@ -43,6 +45,7 @@ SESSION_ID = "0x" + "5e" * 32
 OPENED_AT = 1_760_000_000 - 60
 EXPIRES_AT = OPENED_AT + 1800
 CHAIN_TIME = 1_760_000_000
+BUYER_DERIVATION = KeyDerivation(31337, "buyer", UUID(RUN))
 
 
 def settings(**overrides: Any) -> AgentSettings:
@@ -1160,3 +1163,133 @@ async def test_a_prompt_template_that_does_not_load_leaves_the_model_unavailable
 def test_an_empty_fixture_directory_setting_is_unset() -> None:
     """infra/.env.example ships `AGENT_MODEL_FIXTURES=`; that is no fixtures, never `Path(".")`."""
     assert settings(model_fixtures="").model_fixtures is None
+
+
+# --------------------------------------------------------------------------------------
+# The outbound-context assertion over HTTP (stage 3.3, ADR-092)
+# --------------------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def observed(
+    fixtures: Path, seen: list[Mapping[str, Any]], **overrides: Any
+) -> AsyncIterator[Agent]:
+    """A fixture instance whose model requests, once they pass the check, land in `seen`."""
+    app = create_app(
+        settings(model_fixtures=fixtures, **overrides),
+        environ={"BUYER_ROOT_KEY": ROOT},
+        model_request_observer=seen.append,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://agent-a") as client:
+        yield Agent(client)
+
+
+async def model_run(agent: Agent, mandate: Mapping[str, Any] | None = None) -> str:
+    body = model_body(mandate=dict(mandate or MANDATES["buyer"]))
+    response = await agent.post(RUN, "provision", body)
+    assert response.status_code == 200, response.text
+    address: str = response.json()["my_address"]
+    assert (await agent.post(RUN, "approve-session", opened_body(address))).status_code == 200
+    return address
+
+
+async def test_a_model_request_carrying_the_shared_secret_is_refused_and_never_sent(
+    log_stream: io.StringIO,
+) -> None:
+    """The exit condition's own-secret case: the operator pasted the secret into instructions."""
+    seen: list[Mapping[str, Any]] = []
+    mandate = {**MANDATES["buyer"], "instructions": f"Remember {SECRET} for later."}
+    async with observed(MODEL_FIXTURES / "default-overlap-settles", seen) as agent:
+        address = await model_run(agent, mandate)
+        first = await agent.post(RUN, "turn", turn_body(address, active_offer=None))
+        again = await agent.post(RUN, "turn", turn_body(address, active_offer=None))
+
+    for response in (first, again):  # not answered, so not cached: asked again, refused again
+        assert response.status_code == 422
+        error = error_of(response)
+        assert error["code"] == "outbound_context_refused"
+        assert error["details"] == {"kind": "shared_secret"}
+    assert seen == []
+    lines = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
+    refused = [line for line in lines if line["event"] == "outbound_context_refused"]
+    assert [line["kind"] for line in refused] == ["shared_secret", "shared_secret"]
+    assert SECRET not in log_stream.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("planted", "kind"),
+    [
+        (lambda: derive_run_key(bytes.fromhex(ROOT[2:]), BUYER_DERIVATION).hex(), "run_key"),
+        (lambda: ROOT.upper(), "instance_key"),
+        (lambda: "-----BEGIN PRIVATE" + " KEY-----", "pem_private_key"),
+    ],
+    ids=["run_key", "root_upper_case", "pem_header"],
+)
+async def test_an_observation_carrying_key_material_is_refused_by_its_kind(
+    planted: Any, kind: str
+) -> None:
+    """The backend's observation is checked too: a builder that put a key in it is caught."""
+    seen: list[Mapping[str, Any]] = []
+    async with observed(MODEL_FIXTURES / "default-overlap-settles", seen) as agent:
+        address = await model_run(agent)
+        previous = {
+            "turn": 1,
+            "decision": {"action": "offer", "quote_amount_minor": "1"},
+            "result": "rejected",
+            "feedback": f"leaked: {planted()}",
+        }
+        body = turn_body(address, active_offer=None, my_previous_decisions=[previous])
+        response = await agent.post(RUN, "turn", body)
+    assert response.status_code == 422, response.text
+    assert error_of(response)["details"] == {"kind": kind}
+    assert seen == []
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        # Split, so the repository's secret scan does not read a test value as a key.
+        "sk-ant-" + "api03-written_by_the_model",
+        # The stage 3.3 review: a name the feedback's own quotes turn into a keystore key.
+        'ciphertext":',
+    ],
+    ids=["anthropic_key_shaped", "keystore_key_completed_by_quoting"],
+)
+async def test_a_field_the_model_names_like_a_key_is_masked_and_the_repair_goes_out(
+    tmp_path: Path, planted: str
+) -> None:
+    """Q92: the model cannot trip the check through its own repair message."""
+    usage = {"input_tokens": 600, "output_tokens": 100}
+    buyer = {
+        "fixture_version": "1",
+        "description": "an extra field named like a key, then a valid offer",
+        "responses": [
+            {
+                "text": json.dumps(
+                    {"decision": {"action": "offer", "quote_amount_minor": "90000000"}, planted: 1}
+                ),
+                "usage": usage,
+            },
+            {
+                "answer": {"decision": {"action": "offer", "quote_amount_minor": "90000000"}},
+                "usage": usage,
+            },
+        ],
+    }
+    for role in ("buyer", "seller"):
+        (tmp_path / f"{role}.json").write_text(json.dumps(buyer), encoding="utf-8")
+    seen: list[Mapping[str, Any]] = []
+    async with observed(tmp_path, seen) as agent:
+        address = await model_run(agent)
+        response = await agent.post(RUN, "turn", turn_body(address, active_offer=None))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "signed"
+    first = body["decisions"][0]["validation"]
+    assert first["code"] == "extra_fields"
+    assert planted not in first["feedback"] and "[credential-shaped text]" in first["feedback"]
+    assert len(seen) == 2
+    repair = seen[1]["messages"][0]["content"][1]["text"]
+    assert "[credential-shaped text]" in repair and planted not in json.dumps(seen)

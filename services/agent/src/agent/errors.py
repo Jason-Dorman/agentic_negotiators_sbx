@@ -101,3 +101,17 @@ class DependencyUnavailableError(AgentError):
 
     code = "dependency_unavailable"
     status = 503
+
+
+class OutboundContextRefusedError(AgentError):
+    """A model request carried something private to this instance, and was not sent (ADR-092).
+
+    `details.kind` names what was found — `shared_secret`, `run_key`, `anthropic_key_shaped` — and
+    never the text. The backend treats it as any refusal: the run waits in `recovery_required`.
+    """
+
+    code = "outbound_context_refused"
+    status = 422
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(f"the model request carried {kind}; it was not sent", {"kind": kind})

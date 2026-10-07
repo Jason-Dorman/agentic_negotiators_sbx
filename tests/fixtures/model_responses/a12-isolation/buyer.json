@@ -1,0 +1,51 @@
+{
+  "fixture_version": "1",
+  "description": "Canned buyer for A12 on the isolation mandates (buyer bound 97.531246): opens at 80, proposes 99.123457 above its own bound and is refused, repairs to 93. Its explanations carry markers the suite looks for on every surface. Fixture data, not model behaviour.",
+  "responses": [
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "80000000"
+        },
+        "explanation": "Buyer self-report: plover opening."
+      },
+      "usage": {
+        "input_tokens": 640,
+        "output_tokens": 190,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2240
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "99123457"
+        },
+        "explanation": "Buyer self-report: sandpiper overreach."
+      },
+      "usage": {
+        "input_tokens": 700,
+        "output_tokens": 190,
+        "cache_read_input_tokens": 2240,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "93000000"
+        },
+        "explanation": "Buyer self-report: dunlin concession."
+      },
+      "usage": {
+        "input_tokens": 700,
+        "output_tokens": 190,
+        "cache_read_input_tokens": 2240,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}

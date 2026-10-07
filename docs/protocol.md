@@ -329,7 +329,7 @@ The `MandateValidator` in each agent service checks every decision before anythi
 | Code | Refused when |
 |---|---|
 | `schema_error` | The response is not an object, has no `decision`, has an `explanation` over 280 characters or not a string, has a `decision` that is not an object, has an `action` other than the three, or omits the action's field |
-| `extra_fields` | The envelope or the decision has a field the schema does not list — a model trying to set `valid_until` or name an `actor`, for instance |
+| `extra_fields` | The envelope or the decision has a field the schema does not list — a model trying to set `valid_until` or name an `actor`, for instance. The feedback names the fields, with any credential-shaped text in the list as quoted written `[credential-shaped text]` — the quotes included, which could otherwise complete a keystore document's `"ciphertext":` — so no name can carry such text into the repair message or the next observation ([ADR-092](decision_log.md)) |
 | `invalid_amount` | `quote_amount_minor` is not a base-10 integer string with no sign, point, exponent or leading zero, or is above `uint256` |
 | `zero_amount` | `quote_amount_minor` is `"0"` |
 | `invalid_offer_hash` | `offer_hash` is not `0x` and 64 hexadecimal characters |

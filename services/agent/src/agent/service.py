@@ -23,7 +23,9 @@ instance's `ModelRuntime`, live or fixture, with a budget over the run's own cei
 system prompt rendered from the run's role and instructions. An instance whose model configuration
 did not load still lists `model` — so a run that needs it fails validation with a reason, not on a
 missing kind — reports `model_ok: false`, and refuses to provision a model run with
-`503 dependency_unavailable`, as it does for its signer.
+`503 dependency_unavailable`, as it does for its signer. Its client sits behind the instance's
+outbound-context assertion, with the run's own key added to it: a request carrying anything private
+to the instance is not sent, and the turn is answered `422 outbound_context_refused` (ADR-092).
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ from agent.errors import (
     RequestValidationError,
     SessionMismatchError,
 )
-from agent.keys import SCHEME, KeyDerivation, KeyHolder
+from agent.keys import SCHEME, KeyDerivation, KeyHolder, RunSigner
 from agent.model import ModelMode, ModelRuntime, RunModelLimits
 from agent.observation import Observation, Role
 from agent.policy import ModelPolicy, Policy
@@ -69,7 +71,9 @@ from agent.state import (
 from agent.turns import TurnExecutor
 from negotiation_protocol import Address, json_sha256, validator_for
 
-PolicyFactory = Callable[[Provisioning], Policy]
+#: A run's policy, from its provisioning and its signer — which a model run's outbound-context
+#: assertion asks whether a request carries the run's key (ADR-092). No policy signs with it.
+PolicyFactory = Callable[[Provisioning, RunSigner], Policy]
 _TURN_ENVELOPE: Final = ("turn", "deadline_at")
 
 
@@ -134,11 +138,12 @@ class AgentService:
             return _reprovision(existing, request, expected_address)
         keys = self._require_signer()
         self._check_identity(request, keys)
-        policy = self._policy(request)
+        factory = self._policy_factory(request)
         derivation = KeyDerivation(
             chain_id=request.expected.chain_id, role=self._role, run_id=run_id
         )
         signer = keys.signer_for(derivation)
+        policy = factory(request, signer)
         _check_address(signer.address, expected_address)
         response = {
             "provisioned": True,
@@ -169,7 +174,7 @@ class AgentService:
                 "provisioned for the wrong role", {"role": f"this instance is the {self._role}"}
             )
 
-    def _policy(self, request: Provisioning) -> Policy:
+    def _policy_factory(self, request: Provisioning) -> PolicyFactory:
         factory = self._policies.get(request.policy)
         if factory is None:
             available = ", ".join(sorted(self._policies))
@@ -177,7 +182,7 @@ class AgentService:
                 f"policy {request.policy!r} is not available on this instance",
                 {"policy": f"one of: {available}"},
             )
-        return factory(request)
+        return factory
 
     # ----------------------------------------------------------------------------------
     # Approve session
@@ -359,7 +364,7 @@ def model_policy_factory(
 ) -> PolicyFactory:
     """The `model` entry of the policy registry. Each run gets its own client and budget."""
 
-    def factory(request: Provisioning) -> Policy:
+    def factory(request: Provisioning, signer: RunSigner) -> Policy:
         if request.model_id is None or request.effort is None:
             raise RequestValidationError(
                 "a model run names its model and its effort",
@@ -380,7 +385,7 @@ def model_policy_factory(
             timeout_s=request.model_timeout_s,
         )
         return ModelPolicy(
-            runtime.client_for(request.model_id, request.effort, limits),
+            runtime.client_for(request.model_id, request.effort, limits, signer),
             template,
             role=request.role,
             instructions=str(request.mandate_document.get("instructions", "")),

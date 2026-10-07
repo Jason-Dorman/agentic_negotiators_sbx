@@ -54,6 +54,7 @@ lint: ## Format check, lint and type check, all three languages
 	forge fmt --check --root contracts
 	uv run python infra/scripts/check_spdx.py
 	uv run python infra/scripts/secret_scan.py
+	uv run python infra/scripts/check_hardcoded_prices.py
 	$(MAKE) artefacts
 
 format: ## Apply formatters

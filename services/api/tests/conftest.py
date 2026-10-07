@@ -1,7 +1,12 @@
-"""The PostgreSQL half of the integration harness (docs/test_strategy.md section 2).
+"""The PostgreSQL and chain halves of the integration harness (docs/test_strategy.md section 2).
 
-Every test here runs against a real PostgreSQL 16 — the test database the Compose profile creates
-beside the development one (`infra/postgres/init`), migrated once per session with the real
+The integration suite and the isolation suite (A12, stage 3.3) share them, which is why they
+live one level above both: a fixture defined twice would be two session-scoped databases and two
+Anvils.
+The unit and contract suites never ask for them.
+
+Every test that does runs against a real PostgreSQL 16 — the test database the Compose profile
+creates beside the development one (`infra/postgres/init`), migrated once per session with the real
 migrations and emptied before each test. A fake would test the fake: the constraints and triggers
 these tests exist to exercise live in the database, not in Python.
 
@@ -36,13 +41,18 @@ DEFAULT_TEST_DATABASE_URL = (
     "agent_negotiation_test"
 )
 
-INTEGRATION_DIR = Path(__file__).resolve().parent
+INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
+ISOLATION_DIR = Path(__file__).resolve().parent / "isolation"
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Both suites need PostgreSQL and Anvil; the isolation suite is also its own CI gate."""
     for item in items:
-        if INTEGRATION_DIR in Path(str(item.fspath)).resolve().parents:
+        parents = Path(str(item.fspath)).resolve().parents
+        if INTEGRATION_DIR in parents or ISOLATION_DIR in parents:
             item.add_marker(pytest.mark.integration)
+        if ISOLATION_DIR in parents:
+            item.add_marker(pytest.mark.isolation)
 
 
 def _integration_required() -> bool:

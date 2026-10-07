@@ -47,6 +47,10 @@ jobs:
         run: uv run python infra/scripts/secret_scan.py
       - name: SPDX identifier on every Solidity source (ADR-032)
         run: uv run python infra/scripts/check_spdx.py
+      # Stage 3.3 (Q91): no scenario's reservation bound in a comparison, no settlement price
+      # anywhere, in any non-test source. Its own tests plant a literal and see it fail.
+      - name: No hardcoded prices (test_strategy section 11)
+        run: uv run python infra/scripts/check_hardcoded_prices.py
 
   # ------------------------------------------------------------------------------------
   # Gate: Format and lint (ruff, mypy strict, eslint, prettier, forge fmt)  blocks merge
@@ -210,17 +214,42 @@ jobs:
       - run: pnpm run test
 
   # ------------------------------------------------------------------------------------
-  # Gates not yet earned. Skipped, never green, until the stage named on each wires it up.
-  # None of these may be made a required check before then.
+  # Gate: Isolation and leakage suite (A12)                               blocks merge
+  # Stage 3.3: whole model-versus-model runs on canned responses, two real agent processes, the
+  # real backend, PostgreSQL and Anvil; every model request, log line, SSE frame and the default
+  # export scanned. It also runs inside `test-python`; this job is its own gate so a failure here
+  # reads as an isolation failure rather than as one test among two thousand.
   # ------------------------------------------------------------------------------------
   isolation:
-    name: Isolation and leakage suite — A12 (stage 3)
-    if: false
+    name: Isolation and leakage suite — A12
     runs-on: ubuntu-latest
+    env:
+      REQUIRE_INTEGRATION: "1"
+    services:
+      postgres:
+        image: postgres:16.15-alpine
+        env:
+          POSTGRES_USER: agent_negotiation
+          POSTGRES_PASSWORD: agent_negotiation
+          POSTGRES_DB: agent_negotiation_test
+          POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent_negotiation -d agent_negotiation_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
       - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
       - run: uv sync --all-groups --all-extras
+      - run: forge build --root contracts
       - run: uv run pytest -m isolation
 
   # docs/test_strategy.md section 10: 100 percent lines on NegotiationExchange, 100 percent
@@ -315,6 +344,11 @@ jobs:
       - run: >
           forge snapshot --check contracts/.gas-snapshot --tolerance 10
           --no-match-path "test/invariant/*" --root contracts
+
+  # ------------------------------------------------------------------------------------
+  # Gates not yet earned. Skipped, never green, until the stage named on each wires it up.
+  # None of these may be made a required check before then.
+  # ------------------------------------------------------------------------------------
 
   e2e:
     name: Playwright E2E (stage 4)
