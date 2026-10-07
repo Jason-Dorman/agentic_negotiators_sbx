@@ -334,6 +334,8 @@ class DecisionRecord(_Model):
     #: The observation the attempt was decided on; the agent's own hash is checked equal to it.
     observation_hash: str | None
     authorized: bool
+    #: ADR-090: a NUL in `raw_response` or the feedback was stored as the text `\u0000`.
+    raw_response_escaped: bool
     label: Literal["private_operational_record_not_an_authorized_offer"]
 
 

@@ -11,7 +11,7 @@ them to refused attempts and to the turn response's `failure.code`.
 | `unparseable` | answered, but its text is missing or not a decision envelope |
 | `refusal` | was declined by the provider's safeguards, `stop_reason: "refusal"` |
 | `max_tokens` | was cut off at `max_tokens`, its text most likely incomplete |
-| `timeout` | was not answered within the run's `model_timeout_s` |
+| `timeout` | was not answered within the run's `model_timeout_s`, or before the turn's deadline |
 | `rate_limited` | was refused with HTTP 429 |
 | `rejected` | was refused with another 4xx, or redirected (never followed): misconfigured |
 | `provider_failure` | failed at the provider (5xx, 529), or answered with a body that is not one |
@@ -20,6 +20,10 @@ them to refused attempts and to the turn response's `failure.code`.
 
 The model's text and the provider's error message are private evidence for the decision record.
 They are never logged, and `ModelResult` has no `repr` that shows them.
+
+`sent` says whether the guard admitted the call, so that it went, or may have gone, to the provider
+and may have been billed. A result that was never sent — a refused budget, a token count that failed
+— is not a model call: `ModelPolicy` makes no decision record of it (ADR-089).
 """
 
 from __future__ import annotations
@@ -75,3 +79,5 @@ class ModelResult:
     latency_ms: int | None = None
     provider_error: ProviderError | None = None
     budget_refusal: BudgetRefusal | None = None
+    #: The guard admitted the call: it went, or may have gone, to the provider.
+    sent: bool = False

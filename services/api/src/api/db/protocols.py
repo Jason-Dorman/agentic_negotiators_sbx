@@ -30,6 +30,7 @@ from api.db.enums import (
     OperationStatus,
     OutcomeKind,
     Party,
+    RunMode,
     RunState,
     TurnState,
     TxStatus,
@@ -147,6 +148,10 @@ class RunRepository(Protocol):
         policy_versions: dict[str, Any],
         prompt_template_versions: dict[str, Any],
     ) -> RunRecord: ...
+
+    async def set_mode(self, run_id: uuid.UUID, mode: RunMode) -> RunRecord:
+        """`live` or `fixture`, from the setup validation's report of the agents (ADR-088)."""
+        ...
 
 
 class MandateRepository(Protocol):

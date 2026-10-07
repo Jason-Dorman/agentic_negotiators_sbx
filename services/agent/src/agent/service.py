@@ -17,12 +17,19 @@ Three rules shape it.
   sign.
 - **The mandate is injected here, not received.** A turn body that carries a `mandate` is refused:
   the backend sends a mandate to an agent once, at provisioning (docs/architecture.md section 5.1).
+
+A model run gets its own policy at provisioning, from `model_policy_factory`: a client of the
+instance's `ModelRuntime`, live or fixture, with a budget over the run's own ceilings, and the
+system prompt rendered from the run's role and instructions. An instance whose model configuration
+did not load still lists `model` — so a run that needs it fails validation with a reason, not on a
+missing kind — reports `model_ok: false`, and refuses to provision a model run with
+`503 dependency_unavailable`, as it does for its signer.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Final
 from uuid import UUID
 
@@ -38,8 +45,10 @@ from agent.errors import (
     SessionMismatchError,
 )
 from agent.keys import SCHEME, KeyDerivation, KeyHolder
+from agent.model import ModelMode, ModelRuntime, RunModelLimits
 from agent.observation import Observation, Role
-from agent.policy import Policy
+from agent.policy import ModelPolicy, Policy
+from agent.prompting import PromptTemplate
 from agent.signing import (
     ApprovedSession,
     FeeTerms,
@@ -60,7 +69,7 @@ from agent.state import (
 from agent.turns import TurnExecutor
 from negotiation_protocol import Address, json_sha256, validator_for
 
-PolicyFactory = Callable[[], Policy]
+PolicyFactory = Callable[[Provisioning], Policy]
 _TURN_ENVELOPE: Final = ("turn", "deadline_at")
 
 
@@ -76,6 +85,8 @@ class AgentService:
         executor: TurnExecutor,
         registry: RunRegistry,
         setup_bounds: SetupBounds,
+        model_mode: ModelMode | None = None,
+        model_ok: bool = False,
     ) -> None:
         self._role = role
         self._instance = instance
@@ -85,6 +96,8 @@ class AgentService:
         self._executor = executor
         self._registry = registry
         self._setup_bounds = setup_bounds
+        self._model_mode = model_mode
+        self._model_ok = model_ok
 
     # ----------------------------------------------------------------------------------
     # Health
@@ -96,9 +109,10 @@ class AgentService:
             "role": self._role,
             "instance": self._instance,
             "policy_kinds": sorted(self._policies),
-            # No model client exists until stage 3. Reported as not ok rather than omitted, so a
-            # model run's setup validation fails with a reason rather than on a missing field.
-            "model_ok": False,
+            "model_ok": self._model_ok,
+            # ADR-088: `fixture` when this instance answers from canned responses, by its own
+            # configuration; the backend records a model run on it as a fixture run.
+            "model_mode": self._model_mode,
             "signer_ok": self._keys is not None,
         }
 
@@ -120,7 +134,7 @@ class AgentService:
             return _reprovision(existing, request, expected_address)
         keys = self._require_signer()
         self._check_identity(request, keys)
-        policy = self._policy(request.policy)
+        policy = self._policy(request)
         derivation = KeyDerivation(
             chain_id=request.expected.chain_id, role=self._role, run_id=run_id
         )
@@ -155,15 +169,15 @@ class AgentService:
                 "provisioned for the wrong role", {"role": f"this instance is the {self._role}"}
             )
 
-    def _policy(self, kind: str) -> Policy:
-        factory = self._policies.get(kind)
+    def _policy(self, request: Provisioning) -> Policy:
+        factory = self._policies.get(request.policy)
         if factory is None:
             available = ", ".join(sorted(self._policies))
             raise RequestValidationError(
-                f"policy {kind!r} is not available on this instance",
+                f"policy {request.policy!r} is not available on this instance",
                 {"policy": f"one of: {available}"},
             )
-        return factory()
+        return factory(request)
 
     # ----------------------------------------------------------------------------------
     # Approve session
@@ -205,7 +219,7 @@ class AgentService:
 
     async def turn(self, run_id: UUID, body: Mapping[str, Any]) -> Mapping[str, Any]:
         record = self._registry.require(run_id, (APPROVED,))
-        turn = _turn_number(body)
+        turn, deadline = _turn_envelope(body)
         document = _observation_document(body, record.provisioning.mandate_document)
         observation_hash = json_sha256(document)
         async with record.turn_lock:
@@ -228,6 +242,7 @@ class AgentService:
                 approval=approval,
                 signer=record.signer,
                 still_open=lambda: not record.released,
+                deadline=deadline,
             )
             response = outcome.to_json()
             record.turns[turn] = AnsweredTurn(observation_hash, response)
@@ -315,28 +330,63 @@ def _changed(expected: Mapping[str, Any], received: Mapping[str, Any]) -> dict[s
     }
 
 
-def _turn_number(body: Mapping[str, Any]) -> int:
+def _turn_envelope(body: Mapping[str, Any]) -> tuple[int, datetime]:
+    """The turn number and the deadline by which this instance must answer (ADR-089)."""
     turn = body.get("turn")
-    deadline = body.get("deadline_at")
     number = turn if isinstance(turn, int) and not isinstance(turn, bool) and turn >= 1 else None
-    if number is None or not _is_iso_utc(deadline):
+    deadline = _iso_utc(body.get("deadline_at"))
+    if number is None or deadline is None:
         problems = {}
         if number is None:
             problems["turn"] = "an integer of at least 1"
-        if not _is_iso_utc(deadline):
+        if deadline is None:
             problems["deadline_at"] = "an ISO 8601 UTC timestamp ending in Z"
         raise RequestValidationError("the turn envelope is malformed", problems)
-    return number
+    return number, deadline
 
 
-def _is_iso_utc(value: object) -> bool:
+def _iso_utc(value: object) -> datetime | None:
     if not isinstance(value, str) or not value.endswith("Z"):
-        return False
+        return None
     try:
-        datetime.fromisoformat(value[:-1] + "+00:00")
+        return datetime.fromisoformat(value[:-1] + "+00:00").astimezone(UTC)
     except ValueError:
-        return False
-    return True
+        return None
+
+
+def model_policy_factory(
+    runtime: ModelRuntime | None, problem: str | None, template: PromptTemplate | None
+) -> PolicyFactory:
+    """The `model` entry of the policy registry. Each run gets its own client and budget."""
+
+    def factory(request: Provisioning) -> Policy:
+        if request.model_id is None or request.effort is None:
+            raise RequestValidationError(
+                "a model run names its model and its effort",
+                {
+                    name: "required for a model policy"
+                    for name, value in (("model_id", request.model_id), ("effort", request.effort))
+                    if value is None
+                },
+            )
+        if runtime is None or template is None:
+            raise DependencyUnavailableError(
+                "this instance's model is not available",
+                {"dependency": "model", "reason": problem or "not configured"},
+            )
+        limits = RunModelLimits(
+            call_ceiling=request.model_call_ceiling,
+            spend_ceiling_usd=request.model_spend_ceiling_usd,
+            timeout_s=request.model_timeout_s,
+        )
+        return ModelPolicy(
+            runtime.client_for(request.model_id, request.effort, limits),
+            template,
+            role=request.role,
+            instructions=str(request.mandate_document.get("instructions", "")),
+        )
+
+    return factory
 
 
 def _observation_document(body: Mapping[str, Any], mandate: Mapping[str, Any]) -> dict[str, Any]:

@@ -815,9 +815,13 @@ cannot price, shows its cost as unknown, never as zero. Stage 5 adds Sepolia's p
 
 ## 9. The model: its key, its price table and the smoke call
 
-Stage 3.1 built the model client and the budget; stage 3.2 puts them behind the agent's
-`ModelPolicy`, and stage 3.4 adds the procedure for a live model-versus-model run. Until then, an
-agent instance offers the deterministic policy only.
+Stage 3.1 built the model client and the budget; stage 3.2 put them behind the agent's
+`ModelPolicy`, with versioned prompts and a fixture mode, and stage 3.4 adds the procedure for a
+live model-versus-model run. An agent instance offers the `model` policy when it is given a key
+reference or a fixture directory, and the deterministic policy only with neither. Its health says
+which (`model_mode`) and whether the model loaded (`model_ok`); when it did not, the instance's log
+line `model_unavailable` names the reason, and a model run fails validation and provisioning with
+`dependency_unavailable`.
 
 ### The key
 
@@ -842,7 +846,8 @@ prices `claude-sonnet-5-5` — the default — `claude-sonnet-5`, `claude-opus-5
 per million tokens of uncached input, output, cache reads, and 5-minute and 1-hour cache writes,
 each with a `source` and a `last_verified` date. When a price changes, copy the file, edit the
 entry and its `last_verified`, and point `AGENT_MODEL_PRICE_TABLE` at the copy; the agent service
-reads it from stage 3.2, when it builds the client, and a model priced twice in one file is refused. A model the table
+reads it at start-up, and a table it cannot read, or that prices a model twice, leaves the instance
+with `model_ok: false`. A model the table
 does not list is refused before any call is made; `AGENT_ALLOW_UNKNOWN_PRICE=true` lets it run with
 only the call ceiling to stop it, and its cost then shows as unknown, never zero.
 
@@ -855,6 +860,43 @@ $2.00 ceiling admits a call while less than about $1.84 has been spent. A call t
 — a timeout, an error status, a malformed answer, a call cancelled at a deadline — is counted at its
 estimate, because it may still have been billed. Its reported cost is unknown, and so is the run's
 reported total: read the estimate beside it, which is always known for a priced model (Q81).
+
+### Fixture mode: canned model responses
+
+To run the model policy end to end without a key or any spend — a demonstration of the plumbing,
+or a test — start both agent instances with `AGENT_MODEL_FIXTURES` naming a directory of canned
+responses instead of `AGENT_MODEL_KEY_REF` ([ADR-088](decision_log.md)); setting both stops the
+instance at start-up. The sets in `tests/fixtures/model_responses/` are described in their README:
+`default-overlap-settles` settles `default-overlap` at 94, `a04-seller-below-floor` aborts with
+reason 2, and `spend-ceiling`, with a run's `model_spend_ceiling_usd` at `0.40` and `model_id`
+`claude-sonnet-5-5`, aborts with reason 3; at another model's prices the ceiling is crossed at
+another call. Create the run with `"policy": "model"`, a `model_id` the price table lists and an `effort`, as
+for a live run. The local Compose profile passes neither `AGENT_MODEL_FIXTURES` nor a model
+key until stage 3.4 wires the model into it; until then run the two instances by hand (section 3),
+from the repository root so the fixture path resolves, with `AGENT_MODEL_FIXTURES` set on each.
+
+Every model call is answered from the instance's role's script, in order, from the start of each
+run, and goes through the run's real budget, validator and signer, so ceilings, costs and refusals
+behave as they do live. The run is recorded as `fixture` at validation, from the agents' own
+health, and every surface labels it: it is evidence of the plumbing, never of a model's behaviour.
+No request can make a run canned: the mode comes only from the agents' health, read at each
+validation, so a run re-validated after its agents changed mode takes the new one. A canned answer
+is held to the run's `model_timeout_s` and the turn's deadline, as a live call is. A script that runs
+out fails the turn with `provider_error`.
+
+### What a model turn can end with
+
+| Turn `failure.code` | Meaning | Abort reason |
+|---|---|---|
+| `repair_exhausted` | Every attempt was answered and refused by the validator — out of mandate, malformed, cut off at `max_tokens` | 2 |
+| `refusal` | The same, and the last answer was the provider's safeguards declining (`stop_reason: refusal`) | 2 |
+| `timeout` | A call was not answered within `model_timeout_s`, or before the turn's deadline | 2 |
+| `provider_error` | 429, another 4xx, a redirect, 5xx, 529, a lost connection, or a body that is not a message; the detail names the status and error type | 2 |
+| `budget_exhausted` | The run's call ceiling or spend ceiling would be crossed, or the model is unpriced | 3 |
+
+Only the first two are repaired ([ADR-089](decision_log.md)). The decision records, behind
+`X-Observer-Reveal: true`, hold each attempt's answer, feedback, usage and both costs; a call the
+budget refused was never sent and has no record.
 
 ### The smoke call
 

@@ -1,0 +1,51 @@
+{
+  "fixture_version": "1",
+  "description": "Canned seller that keeps countering high. Fixture data, not model behaviour.",
+  "responses": [
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "99000000"
+        },
+        "explanation": "Countering high."
+      },
+      "usage": {
+        "input_tokens": 620,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2150
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "98000000"
+        },
+        "explanation": "Conceding a little."
+      },
+      "usage": {
+        "input_tokens": 680,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 2150,
+        "cache_creation_input_tokens": 0
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "97000000"
+        },
+        "explanation": "Conceding a little more."
+      },
+      "usage": {
+        "input_tokens": 680,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 2150,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}

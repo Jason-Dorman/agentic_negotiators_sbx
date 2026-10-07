@@ -203,7 +203,7 @@ Public configuration, timeline summary, and status. Never includes mandates, pri
   "created_at": "…",
   "state": "running",
   "state_cause": null,
-  "mode": "live" | "replay",
+  "mode": "live" | "fixture" | "replay",
   "outcome": { "kind": "pending" | "settled" | "closed" | "expired" | "aborted", "reason_code": null, "reason": null, "actor": null },
   "deployment": { "deployment_id": "…", "chain_id": 31337, "exchange_address": "0x…", "explorer_base_url": null },
   "session": {
@@ -260,7 +260,7 @@ Runs the setup validation in spec 3.1. Synchronous, may take a few seconds. Resp
     { "check": "relay_eth_balance", "ok": true, "detail": "10000000000000000000000 wei" },
     { "check": "operator_eth_balance", "ok": true, "detail": "9999990000000000000000 wei" },
     { "check": "buyer_agent", "ok": false, "detail": "its signer did not load" },
-    { "check": "buyer_agent_model_available", "ok": true },
+    { "check": "buyer_agent_model_available", "ok": true, "detail": "live" },
     { "check": "buyer_wallet", "ok": true, "detail": "0x…" },
     { "check": "seller_agent", "ok": true, "detail": "agent-b" },
     { "check": "seller_wallet", "ok": true, "detail": "0x…" }
@@ -268,7 +268,7 @@ Runs the setup validation in spec 3.1. Synchronous, may take a few seconds. Resp
 }
 ```
 
-Every check is reported, passing or not (stage 2.4, `api.validation`). The chain ID must be the manifest's and one of 31337 and 11155111; each contract's runtime bytecode must hash to the manifest's `code_hashes`; a `confirmation_threshold` that is not an integer of at least 1 is refused ([ADR-059](decision_log.md)); each agent must answer as its role with its signer loaded and the run's policy among its `policy_kinds`, and with `model_ok` for a model policy. The participant wallets are fresh and hold nothing until start funds them, which is not a failure. Never reports feasibility. Never includes a mandate value. On success the run moves to `validated`; a `validated` run whose validation no longer passes goes back to `draft`, cause `validation_failed`.
+Every check is reported, passing or not (stage 2.4, `api.validation`). The chain ID must be the manifest's and one of 31337 and 11155111; each contract's runtime bytecode must hash to the manifest's `code_hashes`; a `confirmation_threshold` that is not an integer of at least 1 is refused ([ADR-059](decision_log.md)); each agent must answer as its role with its signer loaded and the run's policy among its `policy_kinds`, and with `model_ok` for a model policy, whose check's `detail` is the agent's `model_mode`. A run with a party on the model policy whose agent reports `model_mode: "fixture"` is recorded with `mode: "fixture"` and labelled so on every surface; otherwise it is `live` ([ADR-088](decision_log.md)). The participant wallets are fresh and hold nothing until start funds them, which is not a failure. Never reports feasibility. Never includes a mandate value. On success the run moves to `validated`; a `validated` run whose validation no longer passes goes back to `draft`, cause `validation_failed`.
 
 #### `POST /v1/runs/{run_id}/start`
 
@@ -332,21 +332,24 @@ Private operational records. Requires `X-Observer-Reveal: true`.
   "decisions": [
     {
       "decision_id": "…", "turn": 2, "party": "seller", "attempt": 1,
-      "policy": "model", "model_id": "claude-sonnet-5-5", "prompt_template_version": "v1.0.0", "effort": "high",
+      "policy": "model", "model_id": "claude-sonnet-5-5", "prompt_template_version": "v1.0.0+bb64137d436ca688", "effort": "high",
       "observation_hash": "0x…",
       "raw_response": { "decision": { "action": "offer", "quote_amount_minor": "85000000" }, "explanation": "…" },
       "validation": { "ok": false, "code": "below_reservation", "feedback": "Your quote is below your reservation price." },
       "stop_reason": "end_turn",
-      "usage": { "input_tokens": 1450, "output_tokens": 60, "cache_read_input_tokens": 1200 },
-      "cost_estimated_usd": "0.02", "cost_reported_usd": null,
+      "usage": { "input_tokens": 680, "output_tokens": 180, "cache_read_input_tokens": 2150, "cache_creation_input_tokens": 0 },
+      "cost_estimated_usd": "0.171320", "cost_reported_usd": "0.003590",
       "latency_ms": 3120, "requested_at": "…",
       "status": "invalid", "request_hash": null,
       "authorized": false,
+      "raw_response_escaped": false,
       "label": "private_operational_record_not_an_authorized_offer"
     }
   ]
 }
 ```
+
+`raw_response_escaped` is true when the response or its feedback held a NUL character, which PostgreSQL cannot store: each one is stored as the six characters `\u0000` ([ADR-090](decision_log.md)). An attempt whose model call was sent but ended without an answer — a timeout, a provider fault — has `validation` `{ "ok": false, "code": null, "feedback": null }` and a `raw_response` of `{ "error": { "outcome", "status", "type", "message", "request_id" } }`, the provider's message private like the model's text; a call that was never sent has no record ([ADR-089](decision_log.md)).
 
 #### `GET /v1/runs/{run_id}/events`
 
@@ -521,10 +524,10 @@ Served by each agent service on its own port. Only the backend may call it. Impl
 #### `GET /internal/health`
 
 ```json
-{ "status": "ok", "role": "buyer", "instance": "agent-a", "policy_kinds": ["deterministic"], "model_ok": false, "signer_ok": true }
+{ "status": "ok", "role": "buyer", "instance": "agent-a", "policy_kinds": ["deterministic", "model"], "model_ok": true, "model_mode": "live" | "fixture" | null, "signer_ok": true }
 ```
 
-`policy_kinds` lists what this instance can run: `deterministic` from stage 2.2, `model` from stage 3. `model_ok` is `false` until the model client exists. `signer_ok` is `false` when the instance's root could not be resolved at start-up — an unset variable, an unreadable keystore, a wrong password — and the reason is in its log; the instance still answers, so "the agent is down" and "the agent's key is misconfigured" stay distinguishable.
+`policy_kinds` lists what this instance can run: `deterministic` always, and `model` when the instance is configured for a model — a key reference (`AGENT_MODEL_KEY_REF`) or a fixture directory (`AGENT_MODEL_FIXTURES`), never both. `model_mode` says which: `live`, `fixture` — canned responses, by the instance's own configuration and never by a run request ([ADR-088](decision_log.md)) — or null with neither. `model_ok` is `true` when that configuration loaded: the key, the model price table, the fixture script and the prompt template. An instance whose model did not load still lists `model`, so a model run's validation fails with a reason, and its log says why. `signer_ok` is `false` when the instance's root could not be resolved at start-up — an unset variable, an unreadable keystore, a wrong password — and the reason is in its log; the instance still answers, so "the agent is down" and "the agent's key is misconfigured" stay distinguishable.
 
 #### `POST /internal/runs/{run_id}/provision`
 
@@ -547,13 +550,13 @@ Idempotent. Delivers the mandate and configuration this instance needs for one r
 }
 ```
 
-Every field is required and parsed strictly: an unknown field, a number where an amount string belongs, or a float where an integer belongs is `422 validation_error`. `model_id` and `effort` are `null` for a deterministic run. `limits.repair_attempts` is the number of repairs after a refused decision, for either policy. The mandate is validated against `mandate.v1.json` and then as value objects, so an amount the schema's pattern admits but a value object refuses — `"100000000\n"` — is refused too. `base_token` equal to `quote_token` is refused ([ADR-037](decision_log.md)), as is any chain integer beyond `uint64`. `key_ref` must be a key reference in the grammar of [ADR-049](decision_log.md) — `env:NAME` with an upper-case variable name, or `keystore:/path.json` — with no run of 32 or more hexadecimal characters anywhere in it, so that a key pasted where its reference belongs is refused and never repeated.
+Every field is required and parsed strictly: an unknown field, a number where an amount string belongs, or a float where an integer belongs is `422 validation_error`. `model_id` and `effort` are `null` for a deterministic run and required for a model run. A model run gets its own client and its own budget over `limits.model_call_ceiling` and `limits.model_spend_ceiling_usd`, its calls bounded by `limits.model_timeout_s`, and its system prompt rendered from its role and the mandate's `instructions`. `limits.repair_attempts` is the number of repairs after a refused decision, for either policy. The mandate is validated against `mandate.v1.json` and then as value objects, so an amount the schema's pattern admits but a value object refuses — `"100000000\n"` — is refused too. `base_token` equal to `quote_token` is refused ([ADR-037](decision_log.md)), as is any chain integer beyond `uint64`. `key_ref` must be a key reference in the grammar of [ADR-049](decision_log.md) — `env:NAME` with an upper-case variable name, or `keystore:/path.json` — with no run of 32 or more hexadecimal characters anywhere in it, so that a key pasted where its reference belongs is refused and never repeated.
 
-Response `200`: `{ "provisioned": true, "my_address": "0x…", "key_derivation": { "scheme": "agent-negotiation-sandbox/participant-key/v1", "chain_id": 31337, "role": "buyer", "run_id": "…" }, "policy_version": "det-1.0.0" | "model-1.0.0", "prompt_template_version": "v1.0.0" | null }`.
+Response `200`: `{ "provisioned": true, "my_address": "0x…", "key_derivation": { "scheme": "agent-negotiation-sandbox/participant-key/v1", "chain_id": 31337, "role": "buyer", "run_id": "…" }, "policy_version": "det-1.0.0" | "model-1.0.0", "prompt_template_version": "v1.0.0+bb64137d436ca688" | null }`. A model run's `prompt_template_version` is the template's directory and a hash of its text ([ADR-029](decision_log.md) as built); a deterministic run's is null.
 
 The run's participant key is **derived**, not supplied ([ADR-039](decision_log.md)). `key_ref` names the instance's root secret; the agent refuses it with `409 key_ref_mismatch` unless it is the root this instance is configured with, so a request routed to the wrong instance cannot make it sign as the other party. The agent derives the key from the root, the chain ID, its role and the run ID, and returns the address as `my_address`; the backend stores that address and `key_derivation` in `wallets` and never sees a key. `expected_address` is null on first provisioning. On a re-provisioning — after an agent restart, for instance — the backend sends the address it stored, and the agent refuses with `409 address_mismatch` if its derivation does not reproduce it; a refused provisioning is not kept.
 
-Refusals, in the order they are checked: a malformed body, `400 bad_request` or `422 validation_error`; `409 invalid_state` for a released run; for a run already provisioned, `409 idempotency_conflict` if the body differs (with `expected_address` left out of the comparison, so a first provisioning and a re-provisioning are the same) or `409 address_mismatch`; `503 dependency_unavailable` with `details.dependency = "signer"` and the reason, when the root did not load; `409 key_ref_mismatch`; `422 validation_error` for a `role` that is not this instance's or a `policy` not in `policy_kinds`; `409 address_mismatch`.
+Refusals, in the order they are checked: a malformed body, `400 bad_request` or `422 validation_error`; `409 invalid_state` for a released run; for a run already provisioned, `409 idempotency_conflict` if the body differs (with `expected_address` left out of the comparison, so a first provisioning and a re-provisioning are the same) or `409 address_mismatch`; `503 dependency_unavailable` with `details.dependency = "signer"` and the reason, when the root did not load; `409 key_ref_mismatch`; `422 validation_error` for a `role` that is not this instance's or a `policy` not in `policy_kinds`; for a model run, `422 validation_error` naming `model_id` or `effort` when either is null, and `503 dependency_unavailable` with `details.dependency = "model"` and the reason when the instance's model did not load; `409 address_mismatch`.
 
 #### `POST /internal/runs/{run_id}/approve-session`
 
@@ -587,7 +590,7 @@ Response `200`:
 
 Body: the observation from [protocol.md](protocol.md) section 12 without the `mandate` field (the service injects its own), plus `turn` (an integer of at least 1) and `deadline_at` (ISO 8601 UTC ending in `Z`, by which the service must answer). A body that carries a `mandate` is `422`: the backend sends a mandate to an agent once, at provisioning.
 
-Before any policy is asked, the service validates the observation — with its own mandate injected — against `observation.v1.json` and then as value objects (`422 validation_error`), and checks it against what this instance approved: `run_id`, `role` and `my_address` must be its own and every `session` field must equal the approved session's (`409 session_mismatch`, with session fields named `session.<field>`), and `chain_time` must be before the session's `expiresAt` (`409 invalid_state`, `details.state = "session_deadline_passed"`). Then it checks the observation against itself ([ADR-046](decision_log.md), [protocol.md](protocol.md) section 12): history in ascending sequence order from 1, alternating from the buyer, each offer with all its fields and its digest recomputed from them under the approved session, the statuses, `expected_sequence`, `offers_remaining_for_me`, and `active_offer` as the last offer while it stands and null once it has expired. A contradiction is `422 observation_inconsistent` with every one named in `details.fields`, and nothing is signed; the controller rebuilds the observation from the chain and retries, up to five times, before moving the run to `RECOVERY_REQUIRED`. Allowed from `approved` only. The same `turn` with the same observation returns the first response; the same `turn` with a different observation is `409 idempotency_conflict`. `deadline_at` is checked for form in stage 2.2 and enforced against the model call from stage 3; the deterministic policy answers at once.
+Before any policy is asked, the service validates the observation — with its own mandate injected — against `observation.v1.json` and then as value objects (`422 validation_error`), and checks it against what this instance approved: `run_id`, `role` and `my_address` must be its own and every `session` field must equal the approved session's (`409 session_mismatch`, with session fields named `session.<field>`), and `chain_time` must be before the session's `expiresAt` (`409 invalid_state`, `details.state = "session_deadline_passed"`). Then it checks the observation against itself ([ADR-046](decision_log.md), [protocol.md](protocol.md) section 12): history in ascending sequence order from 1, alternating from the buyer, each offer with all its fields and its digest recomputed from them under the approved session, the statuses, `expected_sequence`, `offers_remaining_for_me`, and `active_offer` as the last offer while it stands and null once it has expired. A contradiction is `422 observation_inconsistent` with every one named in `details.fields`, and nothing is signed; the controller rebuilds the observation from the chain and retries, up to five times, before moving the run to `RECOVERY_REQUIRED`. Allowed from `approved` only. The same `turn` with the same observation returns the first response; the same `turn` with a different observation is `409 idempotency_conflict`. `deadline_at` is the time by which the service answers ([ADR-089](decision_log.md)): each attempt is given the time left less one second, for the answer to travel, and a model call — its token count included — still unanswered then is a `timeout`; an attempt with no time left is not made. The deterministic policy answers at once.
 
 Response `200`:
 
@@ -611,7 +614,17 @@ Response `200`:
 
 `typed_message` carries the Solidity field names, because `export.v1.json` restricts its keys to them: `{ "sessionId", "configHash", "sequence", "proposer", "quoteAmount", "validUntil" }` for an offer, `{ …, "actor", "offerHash" }` for an accept, `{ …, "actor", "reason" }` for a close. Amounts are decimal strings; `sequence`, `validUntil` and `reason` are integers. Every field comes from the approved session, the validated decision, the observation's `expected_sequence` and `chain_time`, or the run's own address — never from the policy's output ([protocol.md](protocol.md) section 11).
 
-`decisions` has one record per attempt: the first, then at most `limits.repair_attempts` repairs, each given only this agent's own feedback from the attempt before. `validation.code` is one of the codes in [protocol.md](protocol.md) section 11.1. `observation_hash` is `json_sha256` of the observation the decision was made from, mandate included, so it equals the backend's `turns.observation_hash` exactly when the two agree on the mandate. When every attempt is refused, `status` is `model_failed`, `failure.code` is `repair_exhausted`, and `failure.detail` names only the number of attempts: the codes and the feedback are private and live in the decision records.
+`decisions` has one record per attempt: the first, then at most `limits.repair_attempts` repairs, each given only this agent's own feedback from the attempt before. `validation.code` is one of the codes in [protocol.md](protocol.md) section 11.1. `observation_hash` is `json_sha256` of the observation the decision was made from, mandate included, so it equals the backend's `turns.observation_hash` exactly when the two agree on the mandate. When every attempt is refused, `status` is `model_failed`, `failure.code` is `repair_exhausted` — or `refusal` when the last attempt was the provider's safeguards declining to answer — and `failure.detail` names only the number of attempts: the codes and the feedback are private and live in the decision records.
+
+Every answer the model gives is judged by the validator, whatever its stop reason: text that is not an envelope is a refused attempt like any other, and repaired, and so is a `refusal` or `max_tokens` answer whose text is not a valid decision; one whose text is a valid, in-mandate decision is signed like any other ([ADR-089](decision_log.md)). Text that could not travel as JSON — nested deeper than 32 levels, or holding `NaN`, `Infinity`, a number too large for a double or a lone UTF-16 surrogate — is kept as text, which the validator refuses; a lone surrogate in text, a stop reason or a provider's error is written as its escape, `\ud800`. A model call that ends without an answer ends the turn at once, with no repair ([ADR-089](decision_log.md)):
+
+| The call | `status` | `failure.code` | Recorded |
+|---|---|---|---|
+| timed out, or reached `deadline_at` | `model_failed` | `timeout` | when sent |
+| refused with 429, another 4xx or a 3xx, failed with 5xx or 529, lost its connection, or answered with a body that is not a message | `model_failed` | `provider_error` | when sent |
+| was refused by the run's budget: the call ceiling, the spend ceiling, or an unpriced model | `budget_exhausted` | `budget_exhausted` | never |
+
+"When sent" means the budget admitted the call, so it went, or may have gone, to the provider and is charged its estimate; its record has `validation` `{ "ok": false, "code": null, "feedback": null }` and a private `raw_response` of `{ "error": { "outcome", "status", "type", "message", "request_id" } }`. A call that never left — refused by the budget, or whose token count failed — has no record, so the run's model calls are the calls actually made. `failure.detail` names the kind of fault, the HTTP status and the provider's error type, or the budget's counts and amounts, and never the provider's message.
 
 The backend persists `decisions` verbatim as private records and `signed_action` as a `signed_actions` row. The service never calls this endpoint's result back; the backend supplies the confirmed outcome in the next observation's `history`.
 

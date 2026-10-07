@@ -38,21 +38,24 @@ signer loaded ([runbook.md](../../docs/runbook.md) section 8).
 | `routes/` | The six internal endpoints, HMAC over method, path and body first (ADR-041) |
 | `service.py` | The use cases behind them; no HTTP and no key |
 | `turns/` | Decide, validate, repair at most as provisioned, sign (ADR-012) |
-| `policy/` | `Policy`, and `DeterministicPolicy`: the baseline of protocol section 13 |
+| `policy/` | `Policy`; `DeterministicPolicy`, the baseline of protocol section 13; `ModelPolicy`, which asks the run's model client and maps every outcome to a refused attempt or a failure of the turn (ADR-089) |
 | `validation/` | `MandateValidator`: every code in protocol section 11.1, with private feedback |
 | `signing/` | Session approval, typed messages from validated state, the setup `approve` (ADR-040) |
 | `keys/` | The instance's root from `env:` or `keystore:`, and each run's key derived from it (ADR-039) |
 | `state/`, `observation.py` | Run-scoped memory; a typed view of a schema-valid observation |
 | `consistency.py` | Refuse an observation that contradicts itself or the approved session (ADR-046) |
 | `keys/references.py` | The grammar a key reference must satisfy, so a pasted key is refused (ADR-049) |
-| `model/` | `ModelClient` and its Anthropic implementation: the request, the decision envelope, every way a call ends as one `ModelOutcome`, the key by `env:` reference (stage 3.1, ADR-086) |
+| `model/` | `ModelClient` and its Anthropic implementation: the request, the decision envelope, every way a call ends as one `ModelOutcome`, the key by `env:` reference (ADR-086); the fixture client, canned answers on an instance configured for them (ADR-088); the runtime that gives each model run its own client and budget |
+| `prompting.py`, `prompts/` | The versioned prompt templates and their recorded version (ADR-029) |
 | `budget/` | `BudgetGuard`, the call and spend ceilings before each call, and the model price table (stage 3.1, ADR-085) |
 | `settings.py`, `logs.py`, `main.py` | `AGENT_*` configuration, redacted JSON logs, the composition root |
 | `tools/smoke_model.py` | One real model call through the client, `make smoke-model` (runbook section 9) |
 
-`prompts/` will hold versioned prompt templates, changed through review like any other source,
-with the version hash recorded per decision ([ADR-029](../../docs/decision_log.md)). The model
-client and the budget are built (stage 3.1); the model policy that uses them arrives in stage 3.2.
+`prompts/` holds the versioned prompt templates, changed through review like any other source,
+with the version hash recorded per decision ([ADR-029](../../docs/decision_log.md)); the wheel
+carries them as `agent/_prompts`. An instance runs the model policy live with
+`AGENT_MODEL_KEY_REF`, or on canned responses with `AGENT_MODEL_FIXTURES`, never both
+([runbook.md](../../docs/runbook.md) section 9).
 
 ## Tests
 
@@ -60,6 +63,7 @@ client and the budget are built (stage 3.1); the model policy that uses them arr
 2.2's exit condition: two instances as real processes, driven over HTTP by a stand-in for the
 backend and the relay, negotiate both scenarios on Anvil through the real contract.
 `tests/unit/test_model_client.py` drives the model client against a local server that answers as
-the provider does (`tests/support/fake_anthropic.py`); nothing in the suite reaches the network.
+the provider does (`tests/support/fake_anthropic.py`), and `test_model_policy.py` drives the model
+policy through the real turn executor with a fake client; nothing in the suite reaches the network.
 The validator
 and the signer are held to 100 percent of branches (`make coverage-python`).

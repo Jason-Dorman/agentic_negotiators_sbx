@@ -1,0 +1,36 @@
+{
+  "fixture_version": "1",
+  "description": "Canned seller for A04: proposes 85 against its floor of 90, and again on its repair, so both attempts are refused and the run aborts with reason 2. Fixture data, not model behaviour.",
+  "responses": [
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "85000000"
+        },
+        "explanation": "Meeting the buyer near its price."
+      },
+      "usage": {
+        "input_tokens": 620,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2150
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "85000000"
+        },
+        "explanation": "Still 85."
+      },
+      "usage": {
+        "input_tokens": 680,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 2150,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}

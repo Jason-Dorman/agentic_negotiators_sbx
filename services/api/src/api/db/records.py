@@ -338,6 +338,8 @@ class DecisionRecord(_FromRow):
     latency_ms: int | None
     requested_at: datetime
     authorized: bool
+    #: ADR-090: a NUL in `raw_response` or `validation_feedback` was stored as the text `\u0000`.
+    raw_response_escaped: bool = False
 
 
 @dataclass(frozen=True, slots=True)

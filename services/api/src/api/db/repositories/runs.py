@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from api.db.enums import OutcomeKind, Party, RunState
+from api.db.enums import OutcomeKind, Party, RunMode, RunState
 from api.db.errors import LeaseLostError
 from api.db.models import ActiveRun, MandateVersion, Run, RunLease, Wallet
 from api.db.protocols import LeaseRepository, MandateRepository, RunRepository, WalletRepository
@@ -157,6 +157,9 @@ class SqlRunRepository(SqlRepository, RunRepository):
             policy_versions=dict(policy_versions),
             prompt_template_versions=dict(prompt_template_versions),
         )
+
+    async def set_mode(self, run_id: uuid.UUID, mode: RunMode) -> RunRecord:
+        return await self._update(run_id, mode=mode)
 
 
 class SqlMandateRepository(SqlRepository, MandateRepository):

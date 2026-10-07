@@ -40,6 +40,10 @@ from api.controller import Progress, RunController, RunRequest
 from api.db import Database, Party, RunRecord, ScenarioRecord
 
 SCENARIOS: Final = Path(__file__).resolve().parents[4] / "scenarios"
+#: Canned model responses (docs/test_strategy.md section 11, ADR-088).
+MODEL_FIXTURES: Final = (
+    Path(__file__).resolve().parents[4] / "tests" / "fixtures" / "model_responses"
+)
 ENVIRON: Final = {"RELAY_KEY": ANVIL_KEYS[1], "OPERATOR_KEY": ANVIL_KEYS[0]}
 
 
@@ -107,9 +111,14 @@ def scenario_record(name: str) -> ScenarioRecord:
 
 
 class Agents:
-    """Two agent applications, each with its own root and shared secret."""
+    """Two agent applications, each with its own root and shared secret.
 
-    def __init__(self) -> None:
+    `model_fixtures` starts both in fixture mode (ADR-088): each answers its model runs from its
+    role's canned script in that directory, through the real policy, validator and signer.
+    """
+
+    def __init__(self, model_fixtures: Path | None = None) -> None:
+        self.model_fixtures = model_fixtures
         self.roots = {
             Party.BUYER: "0x" + secrets.token_hex(32),
             Party.SELLER: "0x" + secrets.token_hex(32),
@@ -133,6 +142,7 @@ class Agents:
             root_key_ref=f"env:{variable}",
             shared_secret=SecretStr(self.secrets[party]),
             port=8101 if party == Party.BUYER else 8102,
+            model_fixtures=self.model_fixtures,
         )
         return create_app(settings, environ={variable: self.roots[party]})
 

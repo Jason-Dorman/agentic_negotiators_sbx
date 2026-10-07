@@ -11,6 +11,7 @@ retried turn. A policy that counts its calls is what makes both visible.
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -33,7 +34,7 @@ EXPIRES_AT = int(CONFIG["expires_at"])
 
 
 def service(policy: ScriptedPolicy) -> AgentService:
-    def factory() -> Policy:
+    def factory(request: Provisioning) -> Policy:
         return policy
 
     return AgentService(
@@ -67,6 +68,9 @@ def provisioning() -> Provisioning:
         model_id=None,
         effort=None,
         repair_attempts=1,
+        model_call_ceiling=20,
+        model_spend_ceiling_usd=Decimal("2.00"),
+        model_timeout_s=45,
         expected=EXPECTED,
         key_ref="env:BUYER_ROOT_KEY",
         mandate_version_id=UUID(int=1),
@@ -103,7 +107,7 @@ def ready(policy: ScriptedPolicy) -> AgentService:
 def turn_body(**changes: Any) -> dict[str, Any]:
     document = observation("buyer", **changes)
     del document["mandate"]
-    return {**document, "turn": 1, "deadline_at": "2026-09-30T12:00:45.000Z"}
+    return {**document, "turn": 1, "deadline_at": "2099-09-30T12:00:45.000Z"}
 
 
 def offer(amount: str) -> dict[str, Any]:
@@ -154,9 +158,9 @@ class GatedPolicy(ScriptedPolicy):
         super().__init__(*responses)
         self.gate = asyncio.Event()
 
-    async def decide(self, observation: Any, repair: Any) -> Any:
+    async def decide(self, observation: Any, repair: Any, *, time_left_s: float | None) -> Any:
         await self.gate.wait()
-        return await super().decide(observation, repair)
+        return await super().decide(observation, repair, time_left_s=time_left_s)
 
 
 async def test_a_run_released_while_its_turn_decides_signs_nothing() -> None:

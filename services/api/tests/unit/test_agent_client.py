@@ -188,6 +188,7 @@ async def test_a_malformed_body_is_reported_by_location_only() -> None:
         "instance": "a",
         "policy_kinds": [],
         "model_ok": False,
+        "model_mode": None,
         "signer_ok": "secret-value",
     }
     instance = client(Answers(200, json.dumps(leaked).encode()))

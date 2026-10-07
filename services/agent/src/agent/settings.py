@@ -12,6 +12,12 @@ the call (ADR-087). `AGENT_MODEL_PRICE_TABLE` names an operator's own price tabl
 packaged one, and `AGENT_ALLOW_UNKNOWN_PRICE` lets a run call a model the table does not price,
 with only the call ceiling to stop it (FR-A9).
 
+`AGENT_MODEL_FIXTURES` names a directory of canned model responses, `buyer.json` and
+`seller.json`, and puts the instance in fixture mode: its model runs answer from its role's script
+instead of the provider, and it says so in its health (ADR-088). It is set instead of
+`AGENT_MODEL_KEY_REF`, never beside it, so an instance is live or fixture and never both. With
+neither, the instance offers the deterministic policy alone.
+
 The shared secret is the one secret held here, as a `SecretStr` so that it never appears in a repr,
 and it must be at least 32 characters: an empty or short secret would make the internal API's HMAC
 decorative (docs/api_contract.md section 6).
@@ -30,6 +36,7 @@ from pydantic import (
     ValidationError,
     ValidationInfo,
     field_validator,
+    model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -64,6 +71,8 @@ class AgentSettings(BaseSettings):
     #: Empty, as `infra/.env.example` leaves it, is unset: the packaged table, never `Path(".")`.
     model_price_table: Annotated[Path | None, BeforeValidator(_empty_is_unset)] = None
     allow_unknown_price: bool = False
+    #: ADR-088: canned responses in place of the provider. Empty is unset.
+    model_fixtures: Annotated[Path | None, BeforeValidator(_empty_is_unset)] = None
 
     @field_validator("model_key_ref")
     @classmethod
@@ -74,6 +83,15 @@ class AgentSettings(BaseSettings):
                 "names the same variable as AGENT_ROOT_KEY_REF, which holds the signing root"
             )
         return value
+
+    @model_validator(mode="after")
+    def _live_or_fixture(self) -> AgentSettings:
+        if self.model_key_ref is not None and self.model_fixtures is not None:
+            raise ValueError(
+                "AGENT_MODEL_KEY_REF and AGENT_MODEL_FIXTURES are both set; an instance is live "
+                "or fixture, never both"
+            )
+        return self
 
 
 class SettingsError(Exception):
@@ -90,7 +108,12 @@ def load_settings() -> AgentSettings:
         return AgentSettings()  # type: ignore[call-arg]  # reason: every field comes from the environment
     except ValidationError as error:
         problems = [
-            f"AGENT_{'_'.join(str(part) for part in item['loc']).upper()}: {item['msg']}"
+            (
+                f"AGENT_{'_'.join(str(part) for part in item['loc']).upper()}: "
+                if item["loc"]
+                else ""
+            )
+            + item["msg"]
             for item in error.errors(include_input=False, include_url=False, include_context=False)
         ]
         raise SettingsError("invalid agent configuration:\n  " + "\n  ".join(problems)) from None

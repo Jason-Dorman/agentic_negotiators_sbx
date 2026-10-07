@@ -1,0 +1,36 @@
+{
+  "fixture_version": "1",
+  "description": "Canned seller for default-overlap: counters at 98, then accepts the buyer's 94 by the active offer's digest. Fixture data, not model behaviour.",
+  "responses": [
+    {
+      "answer": {
+        "decision": {
+          "action": "offer",
+          "quote_amount_minor": "98000000"
+        },
+        "explanation": "Countering well above my floor."
+      },
+      "usage": {
+        "input_tokens": 620,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2150
+      }
+    },
+    {
+      "answer": {
+        "decision": {
+          "action": "accept",
+          "offer_hash": "{{active_offer.offer_hash}}"
+        },
+        "explanation": "94 is acceptable."
+      },
+      "usage": {
+        "input_tokens": 680,
+        "output_tokens": 180,
+        "cache_read_input_tokens": 2150,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  ]
+}

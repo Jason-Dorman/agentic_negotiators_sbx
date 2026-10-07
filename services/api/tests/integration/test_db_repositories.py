@@ -9,9 +9,11 @@ concurrent appends, and that every read reflects writes made earlier in the same
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from api_seed import Seeder, deployment_record, fresh_address, fresh_digest, now, scenario_record
@@ -24,6 +26,7 @@ from api.db import (
     LeaseLostError,
     NewBalanceSnapshot,
     NewChainEvent,
+    NewDecision,
     NewOperation,
     NotFoundError,
     OperationStatus,
@@ -346,6 +349,109 @@ class TestTurnsAndDecisions:
         assert [d.attempt for d in buyers] == [1, 2]
         assert buyers[0].validation_feedback == "Your quote is above your limit."
         assert authorised.authorized is True
+
+    async def test_a_nul_is_stored_as_text_and_the_record_says_so(
+        self, database: Database, seed: Seeder
+    ) -> None:
+        """Q71, ADR-090: JSONB and TEXT refuse a NUL; the record keeps it as `\\u0000`, with each
+        backslash doubled so that the escape is reversible."""
+        run = await seed.run()
+        raw = {
+            "decision": {"action": "offer", "quote_amount_minor": "95000000", "x\x00": 1},
+            "explanation": "Opening\x00 high.",
+            "notes": ["\x00", 7, None],
+        }
+        async with database.unit_of_work() as uow:
+            turn = await seed.turn(uow, run.id, number=1)
+            stored = await uow.decisions.add(
+                self._decision(turn, raw, feedback='... remove "x\x00".')
+            )
+            plain = await seed.decision(uow, turn, attempt=2)
+            [read, _] = await uow.decisions.list_for_run(run.id)
+        assert read.raw_response == {
+            "decision": {"action": "offer", "quote_amount_minor": "95000000", "x\\u0000": 1},
+            "explanation": "Opening\\u0000 high.",
+            "notes": ["\\u0000", 7, None],
+        }
+        assert read.validation_feedback == '... remove "x\\u0000".'
+        assert stored.raw_response_escaped is read.raw_response_escaped is True
+        assert plain.raw_response_escaped is False
+
+    @pytest.mark.parametrize(
+        ("raw", "stop_reason", "feedback"),
+        [
+            ({"k\x00": 1}, None, None),
+            ({"notes": [1, "\x00"]}, None, None),
+            ({"x": 1}, "end\x00turn", None),
+            ({"x": 1}, None, "fb\x00"),
+            ("plain text\x00", None, None),
+        ],
+        ids=["key_only", "list_item_only", "stop_reason_only", "feedback_only", "text_only"],
+    )
+    async def test_any_one_nul_escapes_the_record(
+        self,
+        database: Database,
+        seed: Seeder,
+        raw: Any,
+        stop_reason: str | None,
+        feedback: str | None,
+    ) -> None:
+        run = await seed.run()
+        async with database.unit_of_work() as uow:
+            turn = await seed.turn(uow, run.id, number=1)
+            stored = await uow.decisions.add(
+                self._decision(turn, raw, stop_reason=stop_reason, feedback=feedback)
+            )
+        assert stored.raw_response_escaped is True
+        stored_text = json.dumps(
+            [stored.raw_response, stored.stop_reason, stored.validation_feedback]
+        )
+        assert "\\u0000" in stored_text and "\x00" not in stored_text
+
+    async def test_the_escape_keeps_a_nul_and_the_literal_text_apart(
+        self, database: Database, seed: Seeder
+    ) -> None:
+        """A key with a NUL and a key that already reads `\\u0000` stay two keys."""
+        run = await seed.run()
+        async with database.unit_of_work() as uow:
+            turn = await seed.turn(uow, run.id, number=1)
+            stored = await uow.decisions.add(
+                self._decision(turn, {"x\x00": 1, "x\\u0000": 2, "path": "C:\\dir"})
+            )
+        assert stored.raw_response == {"x\\u0000": 1, "x\\\\u0000": 2, "path": "C:\\\\dir"}
+
+    async def test_a_turns_failure_with_a_nul_is_stored_escaped(
+        self, database: Database, seed: Seeder
+    ) -> None:
+        run = await seed.run()
+        async with database.unit_of_work() as uow:
+            turn = await seed.turn(uow, run.id, number=1)
+            failed = await uow.turns.update_state(
+                turn.id,
+                TurnState.MODEL_FAILED,
+                failure_code="provider_error",
+                failure_detail="the model call failed: rejected (HTTP 400 bad\x00type)",
+            )
+        assert failed.failure_detail == "the model call failed: rejected (HTTP 400 bad\\u0000type)"
+        assert failed.failure_code == "provider_error"
+
+    @staticmethod
+    def _decision(
+        turn: Any, raw: Any, *, stop_reason: str | None = None, feedback: str | None = None
+    ) -> NewDecision:
+        return NewDecision(
+            turn_id=turn.id,
+            run_id=turn.run_id,
+            party=Party.BUYER,
+            attempt=1,
+            policy=PolicyKind.MODEL,
+            raw_response=raw,
+            validation_ok=False,
+            validation_code="schema_error",
+            validation_feedback=feedback,
+            stop_reason=stop_reason,
+            requested_at=now(),
+        )
 
 
 class TestSignedActions:

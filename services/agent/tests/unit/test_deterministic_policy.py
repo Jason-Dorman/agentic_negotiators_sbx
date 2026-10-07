@@ -41,7 +41,7 @@ def facing_own_offer_index(role: Role, k: int, max_offers: int, **kwargs: Any) -
 
 
 async def decided(document: dict[str, Any]) -> dict[str, Any]:
-    response = await POLICY.decide(typed(document), None)
+    response = await POLICY.decide(typed(document), None, time_left_s=None)
     raw = response.raw_response
     assert isinstance(raw, dict)
     assert set(raw) == {"decision"}, "the baseline states no explanation"
@@ -331,14 +331,14 @@ async def test_every_decision_it_makes_passes_the_validator() -> None:
     for role in roles:
         for k in range(4):
             document = facing_own_offer_index(role, k, 8)
-            response = await POLICY.decide(typed(document), None)
+            response = await POLICY.decide(typed(document), None, time_left_s=None)
             assert validator.validate(response.raw_response, typed(document)).ok
 
 
 async def test_the_same_observation_gives_the_same_decision() -> None:
     document = facing_own_offer_index("buyer", 2, 8)
-    first = await POLICY.decide(typed(document), None)
-    second = await POLICY.decide(typed(document), None)
+    first = await POLICY.decide(typed(document), None, time_left_s=None)
+    second = await POLICY.decide(typed(document), None, time_left_s=None)
     assert first == second
 
 
@@ -349,7 +349,7 @@ def test_it_reports_its_kind_and_version_and_no_prompt() -> None:
 
 
 async def test_a_deterministic_response_carries_no_model_accounting() -> None:
-    response = await POLICY.decide(typed(observation("buyer")), None)
+    response = await POLICY.decide(typed(observation("buyer")), None, time_left_s=None)
     assert response.stop_reason is None
     assert response.usage is None
     assert response.cost_estimated_usd is None

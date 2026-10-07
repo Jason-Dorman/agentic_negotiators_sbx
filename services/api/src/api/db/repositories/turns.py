@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -59,8 +59,13 @@ class SqlTurnRepository(SqlRepository, TurnRepository):
         if finished_at is not None:
             values["finished_at"] = finished_at
         if failure_code is not None:
-            values["failure_code"] = failure_code
-            values["failure_detail"] = failure_detail
+            # An agent's failure can quote a provider's error type, which can hold a NUL (ADR-090).
+            values["failure_code"] = (
+                escape_nul(failure_code) if has_nul(failure_code) else failure_code
+            )
+            values["failure_detail"] = (
+                escape_nul(failure_detail) if has_nul(failure_detail) else failure_detail
+            )
         statement = update(Turn).where(Turn.id == turn_id).values(**values).returning(Turn)
         return TurnRecord.from_row(required(await self._write_scalar(statement), f"turn {turn_id}"))
 
@@ -69,7 +74,21 @@ class SqlDecisionRepository(SqlRepository, DecisionRepository):
     """**Private** rows: raw model output and the validation feedback it drew."""
 
     async def add(self, new: NewDecision) -> DecisionRecord:
-        row = await self._write_scalar(insert(Decision).values(**asdict(new)).returning(Decision))
+        """Stored as the agent reported it, except when the response, its stop reason or its
+        feedback holds a NUL, which JSONB and TEXT refuse: then every string of those three is
+        escaped — each backslash doubled, each NUL written as the six characters `\\u0000` — and
+        the record says so (ADR-090, Q71). Doubling the backslashes keeps the escape reversible, so
+        a NUL and the literal text `\\u0000` never become the same key or value."""
+        values = asdict(new)
+        escaped = any(
+            has_nul(new_value)
+            for new_value in (new.raw_response, new.stop_reason, new.validation_feedback)
+        )
+        if escaped:
+            for name in ("raw_response", "stop_reason", "validation_feedback"):
+                values[name] = escape_nul(values[name])
+        values["raw_response_escaped"] = escaped
+        row = await self._write_scalar(insert(Decision).values(**values).returning(Decision))
         return DecisionRecord.from_row(row)
 
     async def list_for_run(self, run_id: uuid.UUID) -> list[DecisionRecord]:
@@ -156,3 +175,30 @@ class SqlSignedActionRepository(SqlRepository, SignedActionRepository):
         )
         row = required(await self._write_scalar(statement), f"signed action {action_id}")
         return SignedActionRecord.from_row(row)
+
+
+NUL: Final = "\x00"
+
+
+def has_nul(value: Any) -> bool:
+    """Whether any string in `value`, keys included, at any depth, holds a NUL."""
+    if isinstance(value, str):
+        return NUL in value
+    if isinstance(value, dict):
+        return any(has_nul(key) or has_nul(item) for key, item in value.items())
+    if isinstance(value, list):
+        return any(has_nul(item) for item in value)
+    return False
+
+
+def escape_nul(value: Any) -> Any:
+    """Every string in `value`, keys included, with each backslash doubled and each NUL written as
+    `\\u0000`: reversible, and storable as JSONB and TEXT. JSON's structure is otherwise
+    untouched."""
+    if isinstance(value, str):
+        return value.replace("\\", "\\\\").replace(NUL, "\\u0000")
+    if isinstance(value, dict):
+        return {escape_nul(key): escape_nul(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [escape_nul(item) for item in value]
+    return value

@@ -686,6 +686,7 @@ async def test_the_validator_checks_each_agent_and_each_key_holder(
                 "instance": "agent-a",
                 "policy_kinds": ["deterministic"],
                 "model_ok": False,
+                "model_mode": None,
                 "signer_ok": False,
             }
             return httpx.Response(200, content=json.dumps(health).encode())
